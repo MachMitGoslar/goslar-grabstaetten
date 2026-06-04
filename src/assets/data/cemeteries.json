@@ -1,0 +1,42 @@
+[
+  {
+    "name": "Feldstraße",
+    "street": "Feldstraße 52",
+    "city": "Goslar",
+    "zipCode": "38640",
+    "url": "https://www.goslar.de/wirtschafts-und-zukunftsort/betriebshof/friedhoefe/feldstrasse",
+    "image":"/feldstraße.jpg"
+  },
+  {
+    "name": "Hildesheimer Straße",
+    "street": "Am Friedhof 1",
+    "city": "Goslar",
+    "zipCode": "38640",
+    "url": "https://www.goslar.de/wirtschafts-und-zukunftsort/betriebshof/friedhoefe/hildesheimer-strasse",
+    "image":"/hildesheimer.jpg"
+  },
+  {
+    "name": "Oker",
+    "street": "Kleine Horst",
+    "city": "Goslar",
+    "zipCode": "38642",
+    "url": "https://www.goslar.de/wirtschafts-und-zukunftsort/betriebshof/friedhoefe/ortsteil-oker",
+    "image":"/hildesheimer.jpg"
+  },
+  {
+    "name": "Jerstedt",
+    "street": "Auf dem Berge",
+    "city": "Goslar",
+    "zipCode": "38644",
+    "url": "https://www.goslar.de/wirtschafts-und-zukunftsort/betriebshof/friedhoefe/ortsteil-jerstedt",
+    "image":"/hildesheimer.jpg"
+  },
+  {
+    "name": "Hahnenklee",
+    "street": "Bockswieser Straße",
+    "city": "Goslar",
+    "zipCode": "38644",
+    "url": "https://www.goslar.de/wirtschafts-und-zukunftsort/betriebshof/friedhoefe/ortsteil-hahnenklee",
+    "image":"/hildesheimer.jpg"
+  }
+]

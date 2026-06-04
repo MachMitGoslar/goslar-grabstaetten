@@ -1,0 +1,122 @@
+.home-page {
+    min-height: 100vh;
+    background: var(--color-background);
+    box-sizing: border-box;
+    font-family: var(--font-family);
+    padding: 50px 15px 40px;
+    text-align: left;
+}
+
+.home-hero {
+    padding-inline: 4px;
+    margin-bottom: 17px;
+}
+
+.home-title {
+    color: var(--color-text);
+    font-size: 27px;
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    line-height: 34px;
+    margin: 0;
+}
+
+.home-subtitle {
+    color: #3F3F3E;
+    font-size: 12px;
+    font-weight: 590;
+    letter-spacing: -0.004em;
+    line-height: 20px;
+    margin: 0;
+    max-width: 355px;
+}
+
+.home-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 17px;
+    margin-bottom: 34px;
+}
+
+.home-cemeteries {
+    display: flex;
+    flex-direction: column;
+}
+
+.home-cemetery-list {
+    display: flex;
+    flex-direction: column;
+    gap: 17px;
+}
+
+.home-section-title {
+    color: var(--color-text);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    line-height: 34px;
+    margin: 0;
+    padding-inline: 4px;
+}
+
+.home-section-subtitle {
+    color: #3F3F3E;
+    font-size: 12px;
+    font-weight: 590;
+    letter-spacing: -0.004em;
+    line-height: 20px;
+    margin: -10px 0 17px;
+    padding-inline: 4px;
+}
+
+@media (min-width: 768px) {
+    .home-page {
+        padding-top: 72px;
+        padding-inline: 32px;
+    }
+
+    .home-title {
+        font-size: 34px;
+        line-height: 42px;
+    }
+
+    .home-subtitle,
+    .home-section-subtitle {
+        font-size: 15px;
+        line-height: 24px;
+        max-width: 520px;
+    }
+
+    .home-section-title {
+        font-size: 18px;
+        line-height: 38px;
+    }
+
+    .home-cemetery-list {
+        gap: 17px;
+    }
+}
+
+@media (min-width: 900px) {
+    .home-page {
+        padding-top: 84px;
+        padding-inline: 48px;
+    }
+
+    .home-hero,
+    .home-section-title,
+    .home-section-subtitle {
+        padding-inline: 0;
+    }
+
+    .home-subtitle,
+    .home-section-subtitle {
+        max-width: 720px;
+    }
+}
+
+@media (min-width: 1200px) {
+    .home-page {
+        padding-inline: 64px;
+    }
+}

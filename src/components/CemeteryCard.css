@@ -1,0 +1,99 @@
+.cemetery-card {
+    width: 100%;
+    border: none;
+    min-height: 103px;
+    border-radius: 16px;
+    background: var(--color-backgroundTile);
+    box-sizing: border-box;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 12px 10px 22px;
+    text-align: left;
+}
+
+.cemetery-card:focus-visible {
+    outline: 3px solid var(--color-primary);
+    outline-offset: 4px;
+}
+
+.cemetery-card__content {
+    min-width: 0;
+}
+
+.cemetery-card__title {
+    color: var(--color-text);
+    font-family: var(--font-family);
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.004em;
+    line-height: 28px;
+    margin: 0 0 2px;
+}
+
+.cemetery-card__address {
+    color: var(--color-text);
+    display: grid;
+    font-family: var(--font-family);
+    font-size: 12px;
+    font-weight: 590;
+    gap: 12px;
+    grid-template-columns: 18px minmax(0, 1fr);
+    letter-spacing: -0.004em;
+    line-height: 20px;
+    color: #3F3F3E;
+}
+
+.cemetery-card__pin {
+    color: var(--color-text);
+    fill: none;
+    height: 18px;
+    margin-top: 2px;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2.4;
+    width: 18px;
+}
+
+.cemetery-card__image {
+    width: min(103px, 29%);
+    height: 84px;
+    border-radius: 16px;
+    flex: 0 0 auto;
+    object-fit: cover;
+}
+
+@media (max-width: 360px) {
+    .cemetery-card {
+        padding-left: 16px;
+    }
+
+    .cemetery-card__image {
+        width: 92px;
+    }
+}
+
+@media (min-width: 768px) {
+    .cemetery-card {
+        min-height: 116px;
+        padding: 12px 14px 12px 24px;
+    }
+
+    .cemetery-card__title {
+        font-size: 21px;
+        line-height: 30px;
+    }
+
+    .cemetery-card__address {
+        font-size: 14px;
+        line-height: 22px;
+    }
+
+    .cemetery-card__image {
+        width: 118px;
+        height: 92px;
+    }
+}

@@ -1,0 +1,85 @@
+.grave-card {
+    width: 100%;
+    min-height: 102px;
+    border: none;
+    border-radius: 16px;
+    background: var(--color-backgroundTile);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.04), 0 2px 4px rgba(0, 0, 0, 0.02);
+    cursor: pointer;
+    padding: 14px 22px;
+    text-align: left;
+    font-family: var(--font-family);
+}
+
+.grave-card:focus-visible {
+    outline: 3px solid var(--color-primary);
+    outline-offset: 4px;
+}
+
+.grave-card__title {
+    color: var(--color-text);
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.004em;
+    line-height: 28px;
+    margin: 0;
+}
+
+.grave-card__dates {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 14px;
+    margin-top: 4px;
+}
+
+.grave-card__meta,
+.grave-card__location {
+    color: #3F3F3E;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    font-weight: 590;
+    letter-spacing: -0.004em;
+    line-height: 28px;
+    min-width: 0;
+}
+
+.grave-card__location {
+    margin-top: 2px;
+}
+
+.grave-card__icon-circle {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #975896;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.grave-card__cross {
+    color: #FFFFFF;
+    font-family: serif;
+    font-size: 16px;
+    line-height: 16px;
+}
+
+@media (min-width: 768px) {
+    .grave-card {
+        min-height: 114px;
+        padding: 18px 28px;
+    }
+
+    .grave-card__title {
+        font-size: 21px;
+        line-height: 30px;
+    }
+
+    .grave-card__meta,
+    .grave-card__location {
+        font-size: 14px;
+    }
+}

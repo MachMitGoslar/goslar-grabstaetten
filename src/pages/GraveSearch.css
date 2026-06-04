@@ -1,0 +1,111 @@
+.grave-search-page {
+    min-height: 100vh;
+    background: var(--color-background);
+    font-family: var(--font-family);
+    padding: 14px 15px 40px;
+    text-align: left;
+}
+
+.grave-search-back {
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: transparent;
+    color: var(--color-primary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin: 0 0 12px 4px;
+}
+
+.grave-search-back:focus-visible {
+    outline: 3px solid var(--color-primary);
+    outline-offset: 4px;
+}
+
+.grave-search-hero {
+    padding-inline: 4px;
+    margin-bottom: 31px;
+}
+
+.grave-search-title {
+    color: var(--color-text);
+    font-size: 27px;
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    line-height: 34px;
+    margin: 0;
+}
+
+.grave-search-subtitle {
+    color: #3F3F3E;
+    font-size: 12px;
+    font-weight: 590;
+    letter-spacing: -0.004em;
+    line-height: 20px;
+    margin: 0;
+    max-width: 355px;
+}
+
+.grave-search-controls {
+    margin-bottom: 37px;
+    padding-inline: 9px 12px;
+}
+
+.grave-search-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.grave-search-empty {
+    color: #3F3F3E;
+    font-size: 12px;
+    font-weight: 590;
+    line-height: 20px;
+    padding: 0 4px;
+}
+
+@media (min-width: 768px) {
+    .grave-search-page {
+        padding: 24px 32px 56px;
+    }
+
+    .grave-search-back {
+        margin-top: 0;
+        margin-bottom: 14px;
+    }
+
+    .grave-search-title {
+        font-size: 34px;
+        line-height: 42px;
+    }
+
+    .grave-search-subtitle {
+        font-size: 15px;
+        line-height: 24px;
+        max-width: 720px;
+    }
+
+    .grave-search-controls {
+        padding-inline: 0;
+    }
+
+    .grave-search-list {
+        gap: 17px;
+    }
+}
+
+@media (min-width: 900px) {
+    .grave-search-page {
+        padding-inline: 48px;
+    }
+}
+
+@media (min-width: 1200px) {
+    .grave-search-page {
+        padding-inline: 64px;
+    }
+}
