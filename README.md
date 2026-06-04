@@ -7,6 +7,7 @@ Mobile-first React-Webapp für die Grabstellensuche und die Übersicht der Gosla
 - Startseite mit Einstieg in `Grabstellensuche` und `Geotour`
 - Friedhofskacheln aus `src/assets/data/cemeteries.json`
 - Grabstellensuche auf Basis von `src/assets/data/data.CSV`
+- Geotour-Seite mit eingebetteter externer Website
 - Live-Suche nach Namen
 - Filtermodal für Geburtsdatum, Todesdatum, Friedhof, Vorname, Nachname und Geburtsname
 - Eigener Kalenderfilter mit Jahr-, Monat- und Tagesauswahl
@@ -37,6 +38,17 @@ npm run preview
 
 - `/` Startseite
 - `/grabstellensuche` Suchseite für Grabstellen
+- `/geotour` Seite mit externer Geotour-Ansicht
+
+## Konfiguration
+
+Die eingebettete Geotour-Website kann über eine Vite-Umgebungsvariable gesetzt werden:
+
+```bash
+VITE_GEOTOUR_URL=https://example.com npm run dev
+```
+
+Ohne Variable nutzt die App aktuell `https://www.goslar.de/` als Fallback.
 
 ## Daten
 
