@@ -62,9 +62,7 @@
 
 .grave-card__cross {
     color: #FFFFFF;
-    font-family: serif;
-    font-size: 16px;
-    line-height: 16px;
+    display: block;
 }
 
 @media (min-width: 768px) {

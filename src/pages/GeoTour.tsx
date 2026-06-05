@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import './GeoTour.css';
 
-const geotourUrl = import.meta.env.VITE_GEOTOUR_URL ?? 'http://localhost:8101';
+const geotourUrl = import.meta.env.VITE_GEOTOUR_URL ?? 'https://wald.goslar.app/home';
 
 export const GeoTourPage = () => {
     const navigate = useNavigate();

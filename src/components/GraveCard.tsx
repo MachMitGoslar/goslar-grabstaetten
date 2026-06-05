@@ -62,7 +62,16 @@ const CalendarIcon = () => (
 
 const CrossIcon = () => (
     <span className="grave-card__icon-circle">
-    <span className="grave-card__cross">†</span>
+        <svg className="grave-card__cross" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+                d="M12 3v18M7 8h10"
+                fill="none"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="3"
+            />
+        </svg>
   </span>
 );
 
