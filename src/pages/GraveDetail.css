@@ -1,0 +1,338 @@
+.grave-detail-page {
+    min-height: 100vh;
+    background: var(--color-background);
+    color: var(--color-text);
+    font-family: var(--font-family);
+    text-align: left;
+}
+
+.grave-detail-back {
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: transparent;
+    color: var(--color-primary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin: 14px 0 8px 19px;
+}
+
+.grave-detail-back:focus-visible,
+.grave-detail-nav-link:focus-visible {
+    outline: 3px solid var(--color-primary);
+    outline-offset: 4px;
+}
+
+.grave-detail-hero {
+    width: 100%;
+    height: 213px;
+    background: #DD3838;
+    overflow: hidden;
+}
+
+.grave-detail-hero img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.grave-detail-content {
+    padding: 19px;
+}
+
+.grave-detail-title {
+    color: var(--color-text);
+    font-size: 27px;
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    line-height: 34px;
+    margin: 0 0 14px;
+}
+
+.grave-detail-dates {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 18px;
+    margin-bottom: 17px;
+}
+
+.grave-detail-meta {
+    color: #3F3F3E;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 12px;
+    font-weight: 590;
+    letter-spacing: -0.004em;
+    line-height: 28px;
+    min-width: 0;
+}
+
+.grave-detail-icon-circle {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #975896;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+}
+
+.grave-detail-cross {
+    color: #FFFFFF;
+}
+
+.grave-detail-section-heading {
+    margin: 0 -19px 22px;
+    border-block: 1px solid #DBDBDB;
+    padding: 4px 19px;
+    color: var(--color-text);
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.004em;
+    line-height: 28px;
+}
+
+.grave-detail-description {
+    color: var(--color-text);
+    font-size: 14px;
+    font-weight: 400;
+    letter-spacing: -0.4px;
+    line-height: 34px;
+    margin: 0 0 26px;
+}
+
+.grave-detail-description p {
+    margin: 0 0 18px;
+    white-space: pre-line;
+}
+
+.grave-detail-description p:last-child {
+    margin-bottom: 0;
+}
+
+.grave-detail-description-label {
+    font-weight: 800;
+}
+
+.grave-detail-map-heading {
+    margin: 0 -19px 14px;
+    border-top: 1px solid #DBDBDB;
+    padding: 16px 19px 0;
+    color: var(--color-text);
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    line-height: 34px;
+}
+
+.grave-detail-map {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1.9;
+    border-radius: 16px;
+    overflow: hidden;
+    background: #EEF1EA;
+    margin-bottom: 16px;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.04);
+}
+
+.grave-detail-map-road,
+.grave-detail-map-park,
+.grave-detail-map-label,
+.grave-detail-map-pin {
+    position: absolute;
+}
+
+.grave-detail-map-road {
+    border-radius: 999px;
+    background: #FFFFFF;
+    box-shadow:
+        0 0 0 1px rgba(209, 207, 198, 0.7),
+        0 1px 3px rgba(0, 0, 0, 0.03);
+}
+
+.grave-detail-map-road--main {
+    width: 118%;
+    height: 20px;
+    left: -9%;
+    top: 55%;
+    transform: rotate(-3deg);
+}
+
+.grave-detail-map-road--cross {
+    width: 20px;
+    height: 104%;
+    left: 58%;
+    top: -2%;
+    transform: rotate(4deg);
+}
+
+.grave-detail-map-road--small {
+    width: 64%;
+    height: 11px;
+    left: -10%;
+    top: 30%;
+    transform: rotate(9deg);
+    opacity: 0.5;
+}
+
+.grave-detail-map-park {
+    border-radius: 32px;
+    background: #CBE8B9;
+    opacity: 0.82;
+}
+
+.grave-detail-map-park--one {
+    width: 30%;
+    height: 42%;
+    left: -11%;
+    bottom: -16%;
+    transform: rotate(-5deg);
+}
+
+.grave-detail-map-park--two {
+    width: 28%;
+    height: 38%;
+    right: -9%;
+    top: -12%;
+    transform: rotate(7deg);
+}
+
+.grave-detail-map-label {
+    max-width: 76%;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.82);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+    color: #2F2D29;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: -0.004em;
+    line-height: 16px;
+    padding: 7px 10px;
+}
+
+.grave-detail-map-label--cemetery {
+    left: 16px;
+    top: 16px;
+}
+
+.grave-detail-map-label--address {
+    left: 16px;
+    bottom: 14px;
+    color: #5F5A4F;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.grave-detail-map-pin {
+    left: 58%;
+    top: 51%;
+    color: var(--color-primary);
+    filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.24));
+    transform: translate(-50%, -92%);
+}
+
+.grave-detail-nav-link {
+    border: none;
+    background: transparent;
+    color: var(--color-primary);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-family);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    line-height: 34px;
+    padding: 0;
+    text-decoration: none;
+}
+
+.grave-detail-missing {
+    min-height: 100vh;
+    background: var(--color-background);
+    padding: 14px 19px;
+    font-family: var(--font-family);
+}
+
+.grave-detail-missing p {
+    color: #3F3F3E;
+    font-size: 14px;
+    line-height: 24px;
+    margin: 20px 0 0;
+}
+
+@media (min-width: 768px) {
+    .grave-detail-back {
+        margin: 24px 0 12px 32px;
+    }
+
+    .grave-detail-hero {
+        height: 320px;
+    }
+
+    .grave-detail-content {
+        padding: 28px 32px 48px;
+    }
+
+    .grave-detail-title {
+        font-size: 34px;
+        line-height: 42px;
+    }
+
+    .grave-detail-section-heading,
+    .grave-detail-map-heading {
+        margin-inline: -32px;
+        padding-inline: 32px;
+    }
+
+    .grave-detail-description {
+        max-width: 820px;
+        font-size: 16px;
+        line-height: 34px;
+    }
+
+    .grave-detail-map {
+        max-width: 820px;
+        aspect-ratio: 2.35;
+    }
+}
+
+@media (min-width: 900px) {
+    .grave-detail-back {
+        margin-left: 48px;
+    }
+
+    .grave-detail-content {
+        padding-inline: 48px;
+    }
+
+    .grave-detail-section-heading,
+    .grave-detail-map-heading {
+        margin-inline: -48px;
+        padding-inline: 48px;
+    }
+}
+
+@media (min-width: 1200px) {
+    .grave-detail-back {
+        margin-left: 64px;
+    }
+
+    .grave-detail-content {
+        padding-inline: 64px;
+    }
+
+    .grave-detail-section-heading,
+    .grave-detail-map-heading {
+        margin-inline: -64px;
+        padding-inline: 64px;
+    }
+}
