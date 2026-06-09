@@ -1,27 +1,70 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import * as L from 'leaflet';
 import type { Map as LeafletMapInstance } from 'leaflet';
 import { useNavigate, useParams } from 'react-router-dom';
-import { graves } from '../data/graveData.ts';
+import { fetchGrave, type GraveRecord } from '../data/graveData.ts';
 import 'leaflet/dist/leaflet.css';
 import './GraveDetail.css';
 
 export const GraveDetailPage = () => {
     const navigate = useNavigate();
     const { graveId } = useParams();
-    const grave = graves.find((record) => record.id === graveId);
+    const [grave, setGrave] = useState<GraveRecord | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState('');
 
-    if (!grave) {
+    useEffect(() => {
+        if (!graveId) {
+            return undefined;
+        }
+
+        let isMounted = true;
+
+        fetchGrave(graveId)
+            .then((graveRecord) => {
+                if (!isMounted) {
+                    return;
+                }
+
+                setGrave(graveRecord);
+                setError('');
+            })
+            .catch(() => {
+                if (!isMounted) {
+                    return;
+                }
+
+                setError('Diese Grabstelle wurde nicht gefunden.');
+            })
+            .finally(() => {
+                if (isMounted) {
+                    setIsLoading(false);
+                }
+            });
+
+        return () => {
+            isMounted = false;
+        };
+    }, [graveId]);
+
+    if (!graveId || isLoading || error || !grave) {
         return (
             <main className="grave-detail-missing">
                 <BackButton onClick={() => navigate('/grabstellensuche')} />
-                <p>Diese Grabstelle wurde nicht gefunden.</p>
+                <p>{!graveId || error ? 'Diese Grabstelle wurde nicht gefunden.' : 'Grabstelle wird geladen.'}</p>
             </main>
         );
     }
 
     const fullName = [grave.firstName, grave.displayLastName].filter(Boolean).join(' ');
     const descriptionParagraphs = buildDescriptionParagraphs(grave, fullName);
+    const navigationTarget = {
+        address: grave.cemeteryAddress,
+        latitude: grave.cemeteryLatitude,
+        longitude: grave.cemeteryLongitude,
+        name: grave.cemeteryName,
+    };
+    const navigationUrl = getNavigationUrl(navigationTarget);
 
     return (
         <main className="grave-detail-page">
@@ -77,11 +120,11 @@ export const GraveDetailPage = () => {
                     address={grave.cemeteryAddress}
                 />
 
-                {grave.navigationUrl && (
+                {navigationUrl && (
                     <a
                         className="grave-detail-nav-link"
-                        href={grave.navigationUrl}
-                        target="_blank"
+                        href={navigationUrl}
+                        onClick={(event) => openNavigationApp(event, navigationTarget)}
                         rel="noreferrer"
                     >
                         <LinkIcon />
@@ -91,6 +134,73 @@ export const GraveDetailPage = () => {
             </section>
         </main>
     );
+};
+
+type NavigationTarget = {
+    address: string;
+    latitude?: number;
+    longitude?: number;
+    name: string;
+};
+
+const getDestinationValue = ({ address, latitude, longitude }: NavigationTarget) => {
+    if (latitude !== undefined && longitude !== undefined) {
+        return `${latitude},${longitude}`;
+    }
+
+    return address;
+};
+
+const getUserAgent = () => {
+    if (typeof navigator === 'undefined') {
+        return '';
+    }
+
+    return navigator.userAgent.toLowerCase();
+};
+
+const getNavigationUrl = (target: NavigationTarget) => {
+    const destination = getDestinationValue(target);
+
+    if (!destination) {
+        return '';
+    }
+
+    const userAgent = getUserAgent();
+
+    if (userAgent.includes('android')) {
+        return `geo:0,0?q=${encodeURIComponent(`${destination} (${target.name})`)}`;
+    }
+
+    if (/iphone|ipad|ipod/.test(userAgent)) {
+        return `maps://?daddr=${encodeURIComponent(destination)}`;
+    }
+
+    if (userAgent.includes('macintosh') || userAgent.includes('mac os')) {
+        return `https://maps.apple.com/?daddr=${encodeURIComponent(destination)}`;
+    }
+
+    return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}`;
+};
+
+const openNavigationApp = (
+    event: MouseEvent<HTMLAnchorElement>,
+    target: NavigationTarget,
+) => {
+    const navigationUrl = getNavigationUrl(target);
+
+    if (!navigationUrl) {
+        return;
+    }
+
+    event.preventDefault();
+
+    if (navigationUrl.startsWith('https://')) {
+        window.open(navigationUrl, '_blank', 'noopener,noreferrer');
+        return;
+    }
+
+    window.location.assign(navigationUrl);
 };
 
 type CemeteryMapProps = {
@@ -164,7 +274,7 @@ const CemeteryMap = ({ latitude, longitude, name, address }: CemeteryMapProps) =
     );
 };
 
-const buildDescriptionParagraphs = (grave: typeof graves[number], fullName: string) => {
+const buildDescriptionParagraphs = (grave: GraveRecord, fullName: string) => {
     const graveLocation = [
         `${fullName} liegt begraben auf dem Friedhof ${grave.cemeteryName}`,
         grave.graveNumber && `in Grab ${grave.graveNumber}`,

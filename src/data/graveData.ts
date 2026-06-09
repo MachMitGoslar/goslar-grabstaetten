@@ -1,6 +1,3 @@
-import cemeteries from './cemeteries.json';
-import graveCsv from './data.CSV?raw';
-
 export type GraveRecord = {
     id: string;
     cemeteryCode: string;
@@ -21,6 +18,7 @@ export type GraveRecord = {
     cemeteryName: string;
     cemeteryAddress: string;
     cemeteryImage: string;
+    cemeteryImagePath: string;
     cemeteryUrl: string;
     cemeteryLatitude?: number;
     cemeteryLongitude?: number;
@@ -28,16 +26,28 @@ export type GraveRecord = {
     searchText: string;
 };
 
-type Cemetery = {
-    name: string;
-    street: string;
-    city: string;
-    zipCode: string;
-    url: string;
-    image: string;
-    latitude?: number;
-    longitude?: number;
+export type GravesPage = {
+    items: GraveRecord[];
+    limit: number;
+    nextOffset: number | null;
+    offset: number;
+    total: number;
 };
+
+export type GraveSearchParams = {
+    birthDate?: string;
+    cemetery?: string;
+    deathDate?: string;
+    query?: string;
+    searchBirthName?: boolean;
+    searchFirstName?: boolean;
+    searchLastName?: boolean;
+};
+
+type GravesPageResponse = GravesPage | GraveRecord[];
+
+const apiBaseUrl = import.meta.env.VITE_API_URL ?? '';
+const gravesPageSize = 80;
 
 const cemeteryImages = import.meta.glob('../assets/cemeteries/*', {
     eager: true,
@@ -45,55 +55,111 @@ const cemeteryImages = import.meta.glob('../assets/cemeteries/*', {
     import: 'default',
 }) as Record<string, string>;
 
-const cemeteryNames: Record<string, string> = {
-    Hi: 'Hildesheimer Straße',
-    Fh: 'Feldstraße',
-};
-
 const getCemeteryImage = (imagePath: string) => {
     const fileName = imagePath.replace(/^\//, '');
 
     return cemeteryImages[`../assets/cemeteries/${fileName}`] ?? '';
 };
 
-const splitLastName = (name: string) => {
-    const match = name.match(/^(.+?)\s+geb\.?\s+(.+)$/i);
+const enrichGrave = (grave: GraveRecord): GraveRecord => ({
+    ...grave,
+    cemeteryImage: grave.cemeteryImage || getCemeteryImage(grave.cemeteryImagePath),
+});
+
+const fetchJson = async <Data>(path: string, signal?: AbortSignal): Promise<Data> => {
+    const response = await fetch(`${apiBaseUrl}${path}`, { signal });
+
+    if (!response.ok) {
+        throw new Error(`API request failed: ${response.status}`);
+    }
+
+    return response.json() as Promise<Data>;
+};
+
+const appendSearchParams = (params: URLSearchParams, searchParams: GraveSearchParams) => {
+    if (searchParams.query) {
+        params.set('q', searchParams.query);
+    }
+
+    if (searchParams.birthDate) {
+        params.set('birthDate', searchParams.birthDate);
+    }
+
+    if (searchParams.deathDate) {
+        params.set('deathDate', searchParams.deathDate);
+    }
+
+    if (searchParams.cemetery) {
+        params.set('cemetery', searchParams.cemetery);
+    }
+
+    if (searchParams.searchFirstName !== undefined) {
+        params.set('searchFirstName', String(searchParams.searchFirstName));
+    }
+
+    if (searchParams.searchLastName !== undefined) {
+        params.set('searchLastName', String(searchParams.searchLastName));
+    }
+
+    if (searchParams.searchBirthName !== undefined) {
+        params.set('searchBirthName', String(searchParams.searchBirthName));
+    }
+};
+
+export const fetchGravesPage = async (
+    offset = 0,
+    limit = gravesPageSize,
+    searchParams: GraveSearchParams = {},
+    signal?: AbortSignal,
+) => {
+    const params = new URLSearchParams({
+        limit: String(limit),
+        offset: String(offset),
+    });
+    appendSearchParams(params, searchParams);
+
+    const response = await fetchJson<GravesPageResponse>(`/api/graves?${params.toString()}`, signal);
+
+    if (Array.isArray(response)) {
+        return {
+            items: response.map(enrichGrave),
+            limit: response.length,
+            nextOffset: null,
+            offset: 0,
+            total: response.length,
+        };
+    }
 
     return {
-        lastName: match?.[1]?.trim() || name,
-        birthName: match?.[2]?.trim() ?? '',
+        ...response,
+        items: response.items.map(enrichGrave),
     };
 };
 
-const getCemetery = (cemeteryCode: string) => {
-    const cemeteryName = cemeteryNames[cemeteryCode] ?? cemeteryCode;
+export const fetchGrave = async (graveId: string) => {
+    const grave = await fetchJson<GraveRecord>(`/api/graves/${encodeURIComponent(graveId)}`);
 
-    return (cemeteries as Cemetery[]).find((cemetery) => cemetery.name === cemeteryName);
+    return enrichGrave(grave);
 };
-
-const getCemeteryAddress = (cemetery?: Cemetery) => {
-    if (!cemetery) {
-        return '';
-    }
-
-    return `${cemetery.street}, ${cemetery.zipCode} ${cemetery.city}`;
-};
-
-const getAge = (columns: string[]) => [
-    columns[11],
-    columns[12],
-    columns[13],
-    columns[14],
-].filter(Boolean).join(' ');
 
 export const normalizeDateValue = (value: string) => {
     const trimmedValue = value.trim();
     const isoDateMatch = trimmedValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const germanDateMatch = trimmedValue.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+    const germanMonthMatch = trimmedValue.match(/^(\d{2})\.(\d{4})$/);
     const isoMonthMatch = trimmedValue.match(/^(\d{4})-(\d{2})$/);
     const isoYearMatch = trimmedValue.match(/^\d{4}$/);
 
     if (isoDateMatch) {
         return `${isoDateMatch[3]}${isoDateMatch[2]}${isoDateMatch[1]}`;
+    }
+
+    if (germanDateMatch) {
+        return `${germanDateMatch[1]}${germanDateMatch[2]}${germanDateMatch[3]}`;
+    }
+
+    if (germanMonthMatch) {
+        return `${germanMonthMatch[1]}${germanMonthMatch[2]}`;
     }
 
     if (isoMonthMatch) {
@@ -106,76 +172,3 @@ export const normalizeDateValue = (value: string) => {
 
     return trimmedValue.replace(/\D/g, '');
 };
-
-export const parseGraves = (csv: string): GraveRecord[] => {
-    const lines = csv.replace(/^\uFEFF/, '').trim().split(/\r?\n/);
-
-    return lines.slice(1).map((line) => {
-        const columns = line.split(';');
-        const id = columns[0] ?? '';
-        const cemeteryCode = columns[1] ?? '';
-        const graveNumber = columns[4] ?? '';
-        const name = columns[8] || 'Unbekannt';
-        const { lastName, birthName } = splitLastName(name);
-        const firstName = columns[9] || '';
-        const birthDate = columns[15] || columns[25] || 'Unbekannt';
-        const deathDate = columns[19] || columns[26] || 'Unbekannt';
-        const cemetery = getCemetery(cemeteryCode);
-        const cemeteryName = cemetery?.name ?? cemeteryNames[cemeteryCode] ?? cemeteryCode;
-        const cemeteryAddress = getCemeteryAddress(cemetery);
-        const cemeteryLabel = [cemeteryName, graveNumber && `Grab ${graveNumber}`]
-            .filter(Boolean)
-            .join(' · ');
-        const birthPlace = columns[16] || 'Unbekannt';
-        const burialDate = columns[20] || 'Unbekannt';
-        const age = getAge(columns) || 'Unbekannt';
-        const status = columns[18] || '';
-        const note = columns[21] || '';
-        const remark = columns[22] || '';
-        const searchText = [
-            firstName,
-            lastName,
-            birthName,
-            birthDate,
-            deathDate,
-            cemeteryLabel,
-            status,
-            note,
-        ].join(' ').toLowerCase();
-
-        return {
-            id,
-            cemeteryCode,
-            graveNumber,
-            displayLastName: name,
-            lastName,
-            firstName,
-            birthName,
-            birthDate,
-            birthPlace,
-            deathDate,
-            burialDate,
-            age,
-            status,
-            note,
-            remark,
-            cemetery: cemeteryLabel,
-            cemeteryName,
-            cemeteryAddress,
-            cemeteryImage: cemetery ? getCemeteryImage(cemetery.image) : '',
-            cemeteryUrl: cemetery?.url ?? '',
-            cemeteryLatitude: cemetery?.latitude,
-            cemeteryLongitude: cemetery?.longitude,
-            navigationUrl: cemeteryAddress
-                ? `https://maps.apple.com/?daddr=${encodeURIComponent(cemeteryAddress)}`
-                : cemetery?.url ?? '',
-            searchText,
-        };
-    });
-};
-
-export const graves = parseGraves(graveCsv);
-
-export const cemeteryOptions = Array.from(
-    new Set(graves.map((grave) => grave.cemeteryName).filter(Boolean)),
-).sort((left, right) => left.localeCompare(right, 'de'));
