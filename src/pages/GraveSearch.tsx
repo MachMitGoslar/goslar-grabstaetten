@@ -1,11 +1,8 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-    defaultGraveFilters,
-    GraveFilterModal,
-    type GraveFilters,
-} from '../components/GraveFilterModal.tsx';
 import { GraveCard } from '../components/GraveCard.tsx';
+import { GraveFilterModal } from '../components/GraveFilterModal.tsx';
+import { defaultGraveFilters, type GraveFilters } from '../components/graveFilterState.ts';
 import SearchBar from '../components/SearchBar.tsx';
 import { cemeteryOptions, graves, normalizeDateValue } from '../data/graveData.ts';
 import './GraveSearch.css';
@@ -18,17 +15,33 @@ export const GraveSearchPage = () => {
 
     const filteredGraves = useMemo(() => {
         const normalizedQuery = query.trim().toLowerCase();
+        const normalizedDateQuery = normalizeDateValue(query);
         const normalizedBirthDate = normalizeDateValue(filters.birthDate);
         const normalizedDeathDate = normalizeDateValue(filters.deathDate);
 
         return graves.filter((grave) => {
-            const matchesQuery = !normalizedQuery || [
+            const searchableTextFields = [
                 filters.searchFirstName && grave.firstName,
                 filters.searchLastName && grave.lastName,
                 filters.searchBirthName && grave.birthName,
+                grave.birthDate,
+                grave.deathDate,
+                grave.burialDate,
+                grave.cemeteryName,
+                grave.cemetery,
+                grave.cemeteryAddress,
             ]
-                .filter(Boolean)
-                .some((value) => String(value).toLowerCase().includes(normalizedQuery));
+                .filter(Boolean);
+
+            const searchableDateFields = [
+                grave.birthDate,
+                grave.deathDate,
+                grave.burialDate,
+            ].map(normalizeDateValue);
+
+            const matchesQuery = !normalizedQuery ||
+                searchableTextFields.some((value) => String(value).toLowerCase().includes(normalizedQuery)) ||
+                Boolean(normalizedDateQuery) && searchableDateFields.some((value) => value.includes(normalizedDateQuery));
 
             const matchesBirthDate = !normalizedBirthDate ||
                 normalizeDateValue(grave.birthDate).includes(normalizedBirthDate);

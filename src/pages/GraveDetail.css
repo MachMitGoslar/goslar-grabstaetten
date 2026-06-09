@@ -1,8 +1,8 @@
 .grave-detail-page {
     min-height: 100vh;
-    background: var(--color-background);
-    color: var(--color-text);
-    font-family: var(--font-family);
+    background: var(--color-background, #F5F5F5);
+    color: var(--color-text, #000000);
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     text-align: left;
 }
 
@@ -11,7 +11,7 @@
     height: 24px;
     border: none;
     background: transparent;
-    color: var(--color-primary);
+    color: var(--color-primary, #A88F35);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -22,14 +22,13 @@
 
 .grave-detail-back:focus-visible,
 .grave-detail-nav-link:focus-visible {
-    outline: 3px solid var(--color-primary);
+    outline: 3px solid var(--color-primary, #A88F35);
     outline-offset: 4px;
 }
 
 .grave-detail-hero {
     width: 100%;
     height: 213px;
-    background: #DD3838;
     overflow: hidden;
 }
 
@@ -45,7 +44,7 @@
 }
 
 .grave-detail-title {
-    color: var(--color-text);
+    color: var(--color-text, #000000);
     font-size: 27px;
     font-weight: 700;
     letter-spacing: -0.4px;
@@ -91,7 +90,7 @@
     margin: 0 -19px 22px;
     border-block: 1px solid #DBDBDB;
     padding: 4px 19px;
-    color: var(--color-text);
+    color: var(--color-text, #000000);
     font-size: 18px;
     font-weight: 700;
     letter-spacing: -0.004em;
@@ -99,7 +98,7 @@
 }
 
 .grave-detail-description {
-    color: var(--color-text);
+    color: var(--color-text, #000000);
     font-size: 14px;
     font-weight: 400;
     letter-spacing: -0.4px;
@@ -124,7 +123,7 @@
     margin: 0 -19px 14px;
     border-top: 1px solid #DBDBDB;
     padding: 16px 19px 0;
-    color: var(--color-text);
+    color: var(--color-text, #000000);
     font-size: 20px;
     font-weight: 700;
     letter-spacing: -0.4px;
@@ -137,116 +136,105 @@
     aspect-ratio: 1.9;
     border-radius: 16px;
     overflow: hidden;
-    background: #EEF1EA;
+    background: #E8ECE2;
     margin-bottom: 16px;
-    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.04);
-}
-
-.grave-detail-map-road,
-.grave-detail-map-park,
-.grave-detail-map-label,
-.grave-detail-map-pin {
-    position: absolute;
-}
-
-.grave-detail-map-road {
-    border-radius: 999px;
-    background: #FFFFFF;
     box-shadow:
-        0 0 0 1px rgba(209, 207, 198, 0.7),
-        0 1px 3px rgba(0, 0, 0, 0.03);
+        inset 0 0 0 1px rgba(0, 0, 0, 0.05),
+        0 4px 8px rgba(0, 0, 0, 0.04),
+        0 2px 4px rgba(0, 0, 0, 0.02);
 }
 
-.grave-detail-map-road--main {
-    width: 118%;
-    height: 20px;
-    left: -9%;
-    top: 55%;
-    transform: rotate(-3deg);
-}
-
-.grave-detail-map-road--cross {
-    width: 20px;
-    height: 104%;
-    left: 58%;
-    top: -2%;
-    transform: rotate(4deg);
-}
-
-.grave-detail-map-road--small {
-    width: 64%;
-    height: 11px;
-    left: -10%;
-    top: 30%;
-    transform: rotate(9deg);
-    opacity: 0.5;
-}
-
-.grave-detail-map-park {
-    border-radius: 32px;
-    background: #CBE8B9;
-    opacity: 0.82;
-}
-
-.grave-detail-map-park--one {
-    width: 30%;
-    height: 42%;
-    left: -11%;
-    bottom: -16%;
-    transform: rotate(-5deg);
-}
-
-.grave-detail-map-park--two {
-    width: 28%;
-    height: 38%;
-    right: -9%;
-    top: -12%;
-    transform: rotate(7deg);
-}
-
-.grave-detail-map-label {
-    max-width: 76%;
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.82);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
-    color: #2F2D29;
+.grave-detail-map--empty {
+    align-items: center;
+    color: #6B675F;
+    display: flex;
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 590;
+    justify-content: center;
     letter-spacing: -0.004em;
-    line-height: 16px;
-    padding: 7px 10px;
 }
 
-.grave-detail-map-label--cemetery {
-    left: 16px;
-    top: 16px;
+.grave-detail-map .leaflet-tile {
+    filter: sepia(0.12) saturate(0.68) contrast(0.9) brightness(1.06);
 }
 
-.grave-detail-map-label--address {
-    left: 16px;
-    bottom: 14px;
-    color: #5F5A4F;
-    font-size: 11px;
-    font-weight: 600;
+.grave-detail-map .leaflet-control-zoom {
+    border: 1px solid rgba(63, 63, 62, 0.12);
+    border-radius: 4px;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.08);
+    margin: 10px 0 0 10px;
+    overflow: hidden;
 }
 
-.grave-detail-map-pin {
-    left: 58%;
-    top: 51%;
-    color: var(--color-primary);
+.grave-detail-map .leaflet-control-zoom a {
+    background: rgba(255, 255, 255, 0.96);
+    border: none;
+    color: #1F1F1D;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 20px;
+    font-weight: 700;
+    height: 30px;
+    line-height: 29px;
+    width: 30px;
+}
+
+.grave-detail-map .leaflet-control-zoom a + a {
+    border-top: 1px solid rgba(63, 63, 62, 0.12);
+}
+
+.grave-detail-map .leaflet-control-zoom a:hover,
+.grave-detail-map .leaflet-control-zoom a:focus {
+    background: #FFFFFF;
+    color: var(--color-primary, #A88F35);
+}
+
+.grave-detail-map .leaflet-control-attribution {
+    background: rgba(255, 255, 255, 0.72);
+    color: #6B675F;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 9px;
+    line-height: 14px;
+    padding: 1px 5px;
+}
+
+.grave-detail-map .leaflet-control-attribution a {
+    color: #6B675F;
+}
+
+.grave-detail-leaflet-pin {
     filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.24));
-    transform: translate(-50%, -92%);
+}
+
+.grave-detail-leaflet-pin span {
+    border: 3px solid #FFFFFF;
+    border-radius: 50% 50% 50% 0;
+    display: block;
+    height: 28px;
+    transform: rotate(-45deg);
+    width: 28px;
+}
+
+.grave-detail-leaflet-pin span::after {
+    background: #FFFFFF;
+    border-radius: 50%;
+    content: '';
+    height: 8px;
+    left: 50%;
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 8px;
 }
 
 .grave-detail-nav-link {
     border: none;
     background: transparent;
-    color: var(--color-primary);
+    color: var(--color-primary, #A88F35);
     cursor: pointer;
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-family: var(--font-family);
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     font-size: 14px;
     font-weight: 700;
     letter-spacing: -0.4px;
@@ -257,9 +245,9 @@
 
 .grave-detail-missing {
     min-height: 100vh;
-    background: var(--color-background);
+    background: var(--color-background, #F5F5F5);
     padding: 14px 19px;
-    font-family: var(--font-family);
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 .grave-detail-missing p {

@@ -22,6 +22,8 @@ export type GraveRecord = {
     cemeteryAddress: string;
     cemeteryImage: string;
     cemeteryUrl: string;
+    cemeteryLatitude?: number;
+    cemeteryLongitude?: number;
     navigationUrl: string;
     searchText: string;
 };
@@ -33,6 +35,8 @@ type Cemetery = {
     zipCode: string;
     url: string;
     image: string;
+    latitude?: number;
+    longitude?: number;
 };
 
 const cemeteryImages = import.meta.glob('../assets/cemeteries/*', {
@@ -160,6 +164,8 @@ export const parseGraves = (csv: string): GraveRecord[] => {
             cemeteryAddress,
             cemeteryImage: cemetery ? getCemeteryImage(cemetery.image) : '',
             cemeteryUrl: cemetery?.url ?? '',
+            cemeteryLatitude: cemetery?.latitude,
+            cemeteryLongitude: cemetery?.longitude,
             navigationUrl: cemeteryAddress
                 ? `https://maps.apple.com/?daddr=${encodeURIComponent(cemeteryAddress)}`
                 : cemetery?.url ?? '',

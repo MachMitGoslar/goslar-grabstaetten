@@ -1,14 +1,6 @@
 import { useState } from 'react';
+import type { GraveFilters } from './graveFilterState.ts';
 import './GraveFilterModal.css';
-
-export type GraveFilters = {
-    birthDate: string;
-    deathDate: string;
-    cemetery: string;
-    searchFirstName: boolean;
-    searchLastName: boolean;
-    searchBirthName: boolean;
-};
 
 type GraveFilterModalProps = {
     filters: GraveFilters;
@@ -16,15 +8,6 @@ type GraveFilterModalProps = {
     onChange: (filters: GraveFilters) => void;
     onClose: () => void;
     onReset: () => void;
-};
-
-export const defaultGraveFilters: GraveFilters = {
-    birthDate: '',
-    deathDate: '',
-    cemetery: '',
-    searchFirstName: true,
-    searchLastName: true,
-    searchBirthName: true,
 };
 
 export const GraveFilterModal = ({

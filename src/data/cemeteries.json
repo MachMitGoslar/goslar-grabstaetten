@@ -5,7 +5,9 @@
     "city": "Goslar",
     "zipCode": "38640",
     "url": "https://www.goslar.de/wirtschafts-und-zukunftsort/betriebshof/friedhoefe/feldstrasse",
-    "image":"/feldstraße.jpg"
+    "image": "/feldstraße.jpg",
+    "latitude": 51.91773,
+    "longitude": 10.43667
   },
   {
     "name": "Hildesheimer Straße",
@@ -13,7 +15,9 @@
     "city": "Goslar",
     "zipCode": "38640",
     "url": "https://www.goslar.de/wirtschafts-und-zukunftsort/betriebshof/friedhoefe/hildesheimer-strasse",
-    "image":"/hildesheimer.jpg"
+    "image": "/hildesheimer.jpg",
+    "latitude": 51.91380,
+    "longitude": 10.41678
   },
   {
     "name": "Oker",
@@ -21,7 +25,9 @@
     "city": "Goslar",
     "zipCode": "38642",
     "url": "https://www.goslar.de/wirtschafts-und-zukunftsort/betriebshof/friedhoefe/ortsteil-oker",
-    "image":"/hildesheimer.jpg"
+    "image": "/hildesheimer.jpg",
+    "latitude": 51.898913,
+    "longitude": 10.475091
   },
   {
     "name": "Jerstedt",
@@ -29,7 +35,9 @@
     "city": "Goslar",
     "zipCode": "38644",
     "url": "https://www.goslar.de/wirtschafts-und-zukunftsort/betriebshof/friedhoefe/ortsteil-jerstedt",
-    "image":"/hildesheimer.jpg"
+    "image": "/hildesheimer.jpg",
+    "latitude": 51.953436,
+    "longitude": 10.383961
   },
   {
     "name": "Hahnenklee",
@@ -37,6 +45,8 @@
     "city": "Goslar",
     "zipCode": "38644",
     "url": "https://www.goslar.de/wirtschafts-und-zukunftsort/betriebshof/friedhoefe/ortsteil-hahnenklee",
-    "image":"/hildesheimer.jpg"
+    "image": "/hildesheimer.jpg",
+    "latitude": 51.856490,
+    "longitude": 10.334510
   }
 ]

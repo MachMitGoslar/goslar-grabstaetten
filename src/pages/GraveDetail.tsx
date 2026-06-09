@@ -1,5 +1,9 @@
+import { useEffect, useRef } from 'react';
+import * as L from 'leaflet';
+import type { Map as LeafletMapInstance } from 'leaflet';
 import { useNavigate, useParams } from 'react-router-dom';
 import { graves } from '../data/graveData.ts';
+import 'leaflet/dist/leaflet.css';
 import './GraveDetail.css';
 
 export const GraveDetailPage = () => {
@@ -66,21 +70,12 @@ export const GraveDetailPage = () => {
 
                 <h2 className="grave-detail-map-heading">Karte</h2>
 
-                <div className="grave-detail-map">
-                    <div className="grave-detail-map-road grave-detail-map-road--main" />
-                    <div className="grave-detail-map-road grave-detail-map-road--cross" />
-                    <div className="grave-detail-map-road grave-detail-map-road--small" />
-                    <div className="grave-detail-map-park grave-detail-map-park--one" />
-                    <div className="grave-detail-map-park grave-detail-map-park--two" />
-                    {grave.cemeteryAddress && (
-                        <div className="grave-detail-map-label grave-detail-map-label--address">
-                            {grave.cemeteryAddress}
-                        </div>
-                    )}
-                    <div className="grave-detail-map-pin" aria-hidden="true">
-                        <MapPinIcon />
-                    </div>
-                </div>
+                <CemeteryMap
+                    latitude={grave.cemeteryLatitude}
+                    longitude={grave.cemeteryLongitude}
+                    name={grave.cemeteryName}
+                    address={grave.cemeteryAddress}
+                />
 
                 {grave.navigationUrl && (
                     <a
@@ -95,6 +90,77 @@ export const GraveDetailPage = () => {
                 )}
             </section>
         </main>
+    );
+};
+
+type CemeteryMapProps = {
+    latitude?: number;
+    longitude?: number;
+    name: string;
+    address: string;
+};
+
+const CemeteryMap = ({ latitude, longitude, name, address }: CemeteryMapProps) => {
+    const containerRef = useRef<HTMLDivElement | null>(null);
+    const mapRef = useRef<LeafletMapInstance | null>(null);
+
+    useEffect(() => {
+        if (!containerRef.current || latitude === undefined || longitude === undefined) {
+            return undefined;
+        }
+
+        const primaryColor = getComputedStyle(document.documentElement)
+            .getPropertyValue('--color-primary')
+            .trim() || '#A88F35';
+        const map = L.map(containerRef.current, {
+            attributionControl: false,
+            zoomControl: true,
+            scrollWheelZoom: false,
+        }).setView([latitude, longitude], 15);
+
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            maxZoom: 19,
+            subdomains: 'abcd',
+        }).addTo(map);
+
+        L.control.attribution({
+            position: 'bottomright',
+            prefix: false,
+        }).addAttribution('© OpenStreetMap © CARTO').addTo(map);
+
+        L.marker([latitude, longitude], {
+            title: name,
+            icon: L.divIcon({
+                className: 'grave-detail-leaflet-pin',
+                html: `<span style="background:${primaryColor}"></span>`,
+                iconSize: [34, 42],
+                iconAnchor: [17, 42],
+            }),
+        }).addTo(map);
+
+        mapRef.current = map;
+        window.setTimeout(() => map.invalidateSize(), 0);
+
+        return () => {
+            map.remove();
+            mapRef.current = null;
+        };
+    }, [address, latitude, longitude, name]);
+
+    if (latitude === undefined || longitude === undefined) {
+        return (
+            <div className="grave-detail-map grave-detail-map--empty">
+                Kartenposition nicht verfügbar.
+            </div>
+        );
+    }
+
+    return (
+        <div
+            ref={containerRef}
+            className="grave-detail-map"
+            aria-label={address ? `Karte: ${address}` : `Karte: ${name}`}
+        />
     );
 };
 
@@ -205,15 +271,5 @@ const LinkIcon = () => (
             strokeLinejoin="round"
             strokeWidth="2.4"
         />
-    </svg>
-);
-
-const MapPinIcon = () => (
-    <svg width="34" height="42" viewBox="0 0 34 42" aria-hidden="true">
-        <path
-            d="M17 41s14-10.3 14-24A14 14 0 0 0 3 17c0 13.7 14 24 14 24Z"
-            fill="currentColor"
-        />
-        <circle cx="17" cy="17" r="5.5" fill="#FFFFFF" />
     </svg>
 );
