@@ -48,10 +48,13 @@ const formatDate = (dateValue, precision) => {
         return 'Unbekannt';
     }
 
-    const value = dateValue instanceof Date
-        ? dateValue.toISOString().slice(0, 10)
-        : String(dateValue).slice(0, 10);
-    const [year, month, day] = value.split('-');
+    const [year, month, day] = dateValue instanceof Date
+        ? [
+            String(dateValue.getFullYear()),
+            String(dateValue.getMonth() + 1).padStart(2, '0'),
+            String(dateValue.getDate()).padStart(2, '0'),
+        ]
+        : String(dateValue).slice(0, 10).split('-');
 
     if (precision === 'year') {
         return year;
@@ -243,22 +246,12 @@ const buildGravesWhere = (query) => {
             searchClauses.push(`p.birth_name ILIKE $${params.length}`);
         }
 
-        [
-            'g.grave_number',
-            'g.cemetery_code',
-            'p.birth_place',
-            'p.occupation_or_status',
-            'p.note',
-            'b.relative_location',
-        ].forEach((column) => {
-            params.push(searchValue);
-            searchClauses.push(`${column} ILIKE $${params.length}`);
-        });
+        params.push(searchValue);
+        searchClauses.push(`g.cemetery_code ILIKE $${params.length}`);
 
         [
             'p.birth_date',
             'p.death_date',
-            'b.burial_date',
         ].forEach((column) => {
             params.push(searchValue, searchValue, searchValue);
             searchClauses.push(`(

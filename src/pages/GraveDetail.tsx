@@ -293,7 +293,6 @@ const buildDescriptionParagraphs = (grave: GraveRecord, fullName: string) => {
     const additionalItems = [
         grave.status && `Stand: ${grave.status}`,
         grave.note && `Anmerkung: ${grave.note}`,
-        grave.remark && grave.remark,
     ].filter(Boolean);
     const additionalDetails = additionalItems.length
         ? `Weiteres:\n${additionalItems.join('\n')}`
