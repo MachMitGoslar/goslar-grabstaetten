@@ -230,20 +230,36 @@ const buildGravesWhere = (query) => {
     if (searchQuery) {
         const searchClauses = [];
         const searchValue = `%${searchQuery}%`;
+        const searchTokens = searchQuery.split(/[\s,]+/).filter(Boolean);
+        const nameColumns = [];
 
         if (isEnabled(query.searchFirstName)) {
+            nameColumns.push('p.first_name');
             params.push(searchValue);
             searchClauses.push(`p.first_name ILIKE $${params.length}`);
         }
 
         if (isEnabled(query.searchLastName)) {
+            nameColumns.push('p.last_name');
             params.push(searchValue);
             searchClauses.push(`p.last_name ILIKE $${params.length}`);
         }
 
         if (isEnabled(query.searchBirthName)) {
+            nameColumns.push('p.birth_name');
             params.push(searchValue);
             searchClauses.push(`p.birth_name ILIKE $${params.length}`);
+        }
+
+        if (searchTokens.length > 1 && nameColumns.length > 0) {
+            const tokenClauses = searchTokens.map((token) => {
+                params.push(`%${token}%`);
+                const tokenParam = `$${params.length}`;
+
+                return `(${nameColumns.map((column) => `${column} ILIKE ${tokenParam}`).join(' OR ')})`;
+            });
+
+            searchClauses.push(`(${tokenClauses.join(' AND ')})`);
         }
 
         params.push(searchValue);
