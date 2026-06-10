@@ -1,144 +1,97 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-    defaultGraveFilters,
-    GraveFilterModal,
-    type GraveFilters,
-} from '../components/GraveFilterModal.tsx';
 import { GraveCard } from '../components/GraveCard.tsx';
+import { GraveFilterModal } from '../components/GraveFilterModal.tsx';
+import { defaultGraveFilters, type GraveFilters } from '../components/graveFilterState.ts';
 import SearchBar from '../components/SearchBar.tsx';
-import graveCsv from '../assets/data/data.CSV?raw';
+import { fetchGravesPage, type GraveRecord, type GraveSearchParams } from '../data/graveData.ts';
+import cemeteries from '../data/cemeteries.json';
 import './GraveSearch.css';
 
-type GraveRecord = {
-    id: string;
-    cemeteryCode: string;
-    graveNumber: string;
-    displayLastName: string;
-    lastName: string;
-    firstName: string;
-    birthName: string;
-    birthDate: string;
-    deathDate: string;
-    cemetery: string;
-    cemeteryName: string;
-    searchText: string;
-};
-
-const cemeteryNames: Record<string, string> = {
-    Hi: 'Hildesheimer Straße',
-    Fh: 'Friedhof',
-};
-
-const splitLastName = (name: string) => {
-    const match = name.match(/^(.+?)\s+geb\.?\s+(.+)$/i);
-
-    return {
-        lastName: match?.[1]?.trim() || name,
-        birthName: match?.[2]?.trim() ?? '',
-    };
-};
-
-const normalizeDateValue = (value: string) => {
-    const trimmedValue = value.trim();
-    const isoDateMatch = trimmedValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    const isoMonthMatch = trimmedValue.match(/^(\d{4})-(\d{2})$/);
-    const isoYearMatch = trimmedValue.match(/^\d{4}$/);
-
-    if (isoDateMatch) {
-        return `${isoDateMatch[3]}${isoDateMatch[2]}${isoDateMatch[1]}`;
-    }
-
-    if (isoMonthMatch) {
-        return `${isoMonthMatch[2]}${isoMonthMatch[1]}`;
-    }
-
-    if (isoYearMatch) {
-        return isoYearMatch[0];
-    }
-
-    return trimmedValue.replace(/\D/g, '');
-};
-
-const parseGraves = (csv: string): GraveRecord[] => {
-    const lines = csv.replace(/^\uFEFF/, '').trim().split(/\r?\n/);
-
-    return lines.slice(1).map((line) => {
-        const columns = line.split(';');
-        const id = columns[0] ?? '';
-        const cemeteryCode = columns[1] ?? '';
-        const graveNumber = columns[4] ?? '';
-        const name = columns[8] || 'Unbekannt';
-        const { lastName, birthName } = splitLastName(name);
-        const firstName = columns[9] || '';
-        const birthDate = columns[15] || columns[25] || 'Unbekannt';
-        const deathDate = columns[19] || columns[26] || 'Unbekannt';
-        const cemeteryName = cemeteryNames[cemeteryCode] ?? cemeteryCode;
-        const cemetery = [cemeteryName, graveNumber && `Grab ${graveNumber}`]
-            .filter(Boolean)
-            .join(' · ');
-        const searchText = [
-            firstName,
-            lastName,
-            birthName,
-            birthDate,
-            deathDate,
-            cemetery,
-            columns[18],
-            columns[21],
-        ].join(' ').toLowerCase();
-
-        return {
-            id,
-            cemeteryCode,
-            graveNumber,
-            displayLastName: name,
-            lastName,
-            firstName,
-            birthName,
-            birthDate,
-            deathDate,
-            cemetery,
-            cemeteryName,
-            searchText,
-        };
-    });
-};
-
-const graves = parseGraves(graveCsv);
-const cemeteryOptions = Array.from(
-    new Set(graves.map((grave) => grave.cemeteryName).filter(Boolean)),
-).sort((left, right) => left.localeCompare(right, 'de'));
+const pageSize = 80;
+const cemeteryOptions = (cemeteries as Array<{ name: string }>)
+    .map((cemetery) => cemetery.name)
+    .sort((left, right) => left.localeCompare(right, 'de'));
 
 export const GraveSearchPage = () => {
     const navigate = useNavigate();
     const [query, setQuery] = useState('');
+    const debouncedQuery = useDebouncedValue(query, 250);
     const [isFilterOpen, setIsFilterOpen] = useState(false);
     const [filters, setFilters] = useState<GraveFilters>(defaultGraveFilters);
+    const [graves, setGraves] = useState<GraveRecord[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isLoadingMore, setIsLoadingMore] = useState(false);
+    const [nextOffset, setNextOffset] = useState<number | null>(null);
+    const [totalGraves, setTotalGraves] = useState<number | null>(null);
+    const [error, setError] = useState('');
 
-    const filteredGraves = useMemo(() => {
-        const normalizedQuery = query.trim().toLowerCase();
-        const normalizedBirthDate = normalizeDateValue(filters.birthDate);
-        const normalizedDeathDate = normalizeDateValue(filters.deathDate);
+    const searchParams = useMemo<GraveSearchParams>(() => ({
+        birthDate: filters.birthDate,
+        cemetery: filters.cemetery,
+        deathDate: filters.deathDate,
+        query: debouncedQuery.trim(),
+        searchBirthName: filters.searchBirthName,
+        searchFirstName: filters.searchFirstName,
+        searchLastName: filters.searchLastName,
+    }), [debouncedQuery, filters]);
 
-        return graves.filter((grave) => {
-            const matchesQuery = !normalizedQuery || [
-                filters.searchFirstName && grave.firstName,
-                filters.searchLastName && grave.lastName,
-                filters.searchBirthName && grave.birthName,
-            ]
-                .filter(Boolean)
-                .some((value) => String(value).toLowerCase().includes(normalizedQuery));
+    useEffect(() => {
+        const abortController = new AbortController();
 
-            const matchesBirthDate = !normalizedBirthDate ||
-                normalizeDateValue(grave.birthDate).includes(normalizedBirthDate);
-            const matchesDeathDate = !normalizedDeathDate ||
-                normalizeDateValue(grave.deathDate).includes(normalizedDeathDate);
-            const matchesCemetery = !filters.cemetery || grave.cemeteryName === filters.cemetery;
+        const loadFirstPage = async () => {
+            setIsLoading(true);
+            setError('');
 
-            return matchesQuery && matchesBirthDate && matchesDeathDate && matchesCemetery;
-        });
-    }, [filters, query]);
+            try {
+                const page = await fetchGravesPage(0, pageSize, searchParams, abortController.signal);
+
+                setGraves(page.items);
+                setNextOffset(page.nextOffset);
+                setTotalGraves(page.total);
+            } catch (loadError) {
+                if (loadError instanceof DOMException && loadError.name === 'AbortError') {
+                    return;
+                }
+
+                setGraves([]);
+                setNextOffset(null);
+                setTotalGraves(null);
+                setError('Grabstellen konnten nicht aus der Datenbank geladen werden.');
+            } finally {
+                if (!abortController.signal.aborted) {
+                    setIsLoading(false);
+                }
+            }
+        };
+
+        void loadFirstPage();
+
+        return () => {
+            abortController.abort();
+        };
+    }, [searchParams]);
+
+    const loadMoreGraves = useCallback(async () => {
+        if (nextOffset === null || isLoadingMore) {
+            return;
+        }
+
+        setIsLoadingMore(true);
+        setError('');
+
+        try {
+            const page = await fetchGravesPage(nextOffset, pageSize, searchParams);
+
+            setGraves((currentGraves) => [...currentGraves, ...page.items]);
+            setNextOffset(page.nextOffset);
+            setTotalGraves(page.total);
+        } catch {
+            setError('Weitere Grabstellen konnten nicht geladen werden.');
+        } finally {
+            setIsLoadingMore(false);
+        }
+    }, [isLoadingMore, nextOffset, searchParams]);
 
     return (
         <main className="grave-search-page">
@@ -169,17 +122,42 @@ export const GraveSearchPage = () => {
             </section>
 
             <section className="grave-search-list" aria-label="Suchergebnisse">
-                {filteredGraves.length > 0 ? (
-                    filteredGraves.map((grave) => (
-                        <GraveCard
-                            key={grave.id}
-                            firstName={grave.firstName}
-                            lastName={grave.displayLastName}
-                            birthDate={grave.birthDate}
-                            deathDate={grave.deathDate}
-                            cemetery={grave.cemetery}
-                        />
-                    ))
+                {error && graves.length === 0 ? (
+                    <p className="grave-search-empty">{error}</p>
+                ) : isLoading ? (
+                    <GraveSearchLoader />
+                ) : graves.length > 0 ? (
+                    <>
+                        {graves.map((grave) => (
+                            <GraveCard
+                                key={grave.id}
+                                firstName={grave.firstName}
+                                lastName={grave.displayLastName}
+                                birthDate={grave.birthDate}
+                                deathDate={grave.deathDate}
+                                cemetery={grave.cemetery}
+                                onClick={() => navigate(`/grabstellensuche/${grave.id}`)}
+                            />
+                        ))}
+
+                        {error && <p className="grave-search-empty">{error}</p>}
+
+                        {nextOffset !== null && (
+                            <button
+                                type="button"
+                                className="grave-search-load-more"
+                                onClick={loadMoreGraves}
+                                disabled={isLoadingMore}
+                            >
+                                {isLoadingMore ? <GraveSearchSpinner /> : 'Weitere laden'}
+                            </button>
+                        )}
+
+                        <p className="grave-search-count">
+                            {graves.length.toLocaleString('de-DE')}
+                            {totalGraves !== null && ` von ${totalGraves.toLocaleString('de-DE')}`} angezeigt
+                        </p>
+                    </>
                 ) : (
                     <p className="grave-search-empty">Keine Grabstellen gefunden.</p>
                 )}
@@ -198,6 +176,18 @@ export const GraveSearchPage = () => {
     );
 };
 
+const useDebouncedValue = <Value,>(value: Value, delay: number) => {
+    const [debouncedValue, setDebouncedValue] = useState(value);
+
+    useEffect(() => {
+        const timeout = window.setTimeout(() => setDebouncedValue(value), delay);
+
+        return () => window.clearTimeout(timeout);
+    }, [delay, value]);
+
+    return debouncedValue;
+};
+
 const BackIcon = () => (
     <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
         <path
@@ -209,4 +199,14 @@ const BackIcon = () => (
             strokeWidth="2.8"
         />
     </svg>
+);
+
+const GraveSearchLoader = () => (
+    <div className="grave-search-loader" role="status" aria-live="polite">
+        <GraveSearchSpinner />
+    </div>
+);
+
+const GraveSearchSpinner = () => (
+    <span className="grave-search-spinner" aria-hidden="true" />
 );

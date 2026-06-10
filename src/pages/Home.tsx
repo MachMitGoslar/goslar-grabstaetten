@@ -1,6 +1,6 @@
 import {CemeteryCard} from "../components/CemeteryCard.tsx";
 import {ButtonTile} from "../components/ButtonTile.tsx";
-import cemeteries from '../assets/data/cemeteries.json';
+import cemeteries from '../data/cemeteries.json';
 import './Home.css';
 
 type Cemetery = {

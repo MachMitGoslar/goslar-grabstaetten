@@ -68,6 +68,71 @@
     padding: 0 4px;
 }
 
+.grave-search-loader {
+    align-items: center;
+    color: #3F3F3E;
+    display: flex;
+    justify-content: center;
+    min-height: 104px;
+    padding: 18px 4px;
+}
+
+.grave-search-spinner {
+    animation: grave-search-spin 0.9s linear infinite;
+    border: 3px solid rgba(168, 143, 53, 0.18);
+    border-top-color: var(--color-primary, #A88F35);
+    border-radius: 50%;
+    display: block;
+    height: 34px;
+    width: 34px;
+}
+
+.grave-search-count {
+    color: #6B675F;
+    font-size: 12px;
+    font-weight: 590;
+    letter-spacing: -0.004em;
+    line-height: 20px;
+    margin: 0;
+    padding: 0 4px;
+    text-align: center;
+}
+
+.grave-search-load-more {
+    align-items: center;
+    align-self: stretch;
+    background: var(--color-backgroundTile, #FFFFFF);
+    border: none;
+    border-radius: 16px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.04), 0 2px 4px rgba(0, 0, 0, 0.02);
+    color: var(--color-primary, #A88F35);
+    cursor: pointer;
+    display: inline-flex;
+    font-family: var(--font-family, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+    font-size: 16px;
+    font-weight: 700;
+    justify-content: center;
+    line-height: 28px;
+    min-height: 56px;
+    padding: 14px 18px;
+}
+
+.grave-search-load-more:disabled {
+    cursor: progress;
+    opacity: 0.72;
+}
+
+.grave-search-load-more:focus-visible {
+    outline: 3px solid var(--color-primary, #A88F35);
+    outline-offset: 4px;
+}
+
+@keyframes grave-search-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
 @media (min-width: 768px) {
     .grave-search-page {
         padding: 24px 32px 56px;
