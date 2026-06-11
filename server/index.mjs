@@ -20,7 +20,7 @@ const cemeteryNames = {
     Hi: 'Hildesheimer Straße',
     Fe: 'Feldstraße',
     Hkl: 'Hahnenklee',
-    Je: 'Jerstedt',
+    JE: 'Jerstedt',
     Ok: 'Oker'
 };
 
