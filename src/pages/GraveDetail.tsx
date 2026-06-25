@@ -58,13 +58,8 @@ export const GraveDetailPage = () => {
 
     const fullName = [grave.firstName, grave.displayLastName].filter(Boolean).join(' ');
     const descriptionParagraphs = buildDescriptionParagraphs(grave, fullName);
-    const navigationTarget = {
-        address: grave.cemeteryAddress,
-        latitude: grave.cemeteryLatitude,
-        longitude: grave.cemeteryLongitude,
-        name: grave.cemeteryName,
-    };
-    const navigationUrl = getNavigationUrl(navigationTarget);
+    const mapTarget = getMapTarget(grave);
+    const navigationUrl = getNavigationUrl(mapTarget);
 
     return (
         <main className="grave-detail-page">
@@ -114,17 +109,17 @@ export const GraveDetailPage = () => {
                 <h2 className="grave-detail-map-heading">Karte</h2>
 
                 <CemeteryMap
-                    latitude={grave.cemeteryLatitude}
-                    longitude={grave.cemeteryLongitude}
-                    name={grave.cemeteryName}
-                    address={grave.cemeteryAddress}
+                    latitude={mapTarget.latitude}
+                    longitude={mapTarget.longitude}
+                    name={mapTarget.name}
+                    address={mapTarget.address}
                 />
 
                 {navigationUrl && (
                     <a
                         className="grave-detail-nav-link"
                         href={navigationUrl}
-                        onClick={(event) => openNavigationApp(event, navigationTarget)}
+                        onClick={(event) => openNavigationApp(event, mapTarget)}
                         rel="noreferrer"
                     >
                         <LinkIcon />
@@ -134,6 +129,24 @@ export const GraveDetailPage = () => {
             </section>
         </main>
     );
+};
+
+const getMapTarget = (grave: GraveRecord): NavigationTarget => {
+    const hasGraveFieldLocation = (
+        grave.graveFieldLatitude !== undefined &&
+        grave.graveFieldLongitude !== undefined
+    );
+
+    return {
+        address: hasGraveFieldLocation
+            ? grave.graveFieldLocationAddress || grave.cemeteryAddress
+            : grave.cemeteryAddress,
+        latitude: hasGraveFieldLocation ? grave.graveFieldLatitude : grave.cemeteryLatitude,
+        longitude: hasGraveFieldLocation ? grave.graveFieldLongitude : grave.cemeteryLongitude,
+        name: hasGraveFieldLocation
+            ? grave.graveFieldLocationTitle || grave.cemeteryName
+            : grave.cemeteryName,
+    };
 };
 
 type NavigationTarget = {
@@ -238,7 +251,7 @@ const CemeteryMap = ({ latitude, longitude, name, address }: CemeteryMapProps) =
             prefix: false,
         }).addAttribution('© OpenStreetMap © CARTO').addTo(map);
 
-        L.marker([latitude, longitude], {
+        const marker = L.marker([latitude, longitude], {
             title: name,
             icon: L.divIcon({
                 className: 'grave-detail-leaflet-pin',
@@ -247,6 +260,8 @@ const CemeteryMap = ({ latitude, longitude, name, address }: CemeteryMapProps) =
                 iconAnchor: [17, 42],
             }),
         }).addTo(map);
+
+        marker.bindPopup([name, address].filter(Boolean).join('<br>'));
 
         mapRef.current = map;
         window.setTimeout(() => map.invalidateSize(), 0);

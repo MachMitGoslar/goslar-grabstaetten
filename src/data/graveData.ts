@@ -17,6 +17,11 @@ export type GraveRecord = {
     cemetery: string;
     cemeteryName: string;
     cemeteryAddress: string;
+    graveField: string;
+    graveFieldLocationTitle: string;
+    graveFieldLocationAddress: string;
+    graveFieldLatitude?: number;
+    graveFieldLongitude?: number;
     cemeteryImage: string;
     cemeteryImagePath: string;
     cemeteryUrl: string;
