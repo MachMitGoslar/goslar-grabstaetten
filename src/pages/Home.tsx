@@ -38,7 +38,7 @@ export const HomePage = () => {
 
             <section className="home-actions">
                 <ButtonTile text="Grabstellensuche" to="/grabstellensuche" />
-                <ButtonTile text="Geotour" to="/geotour" />
+                <ButtonTile text="Friedhofstour" to="/geotour" />
             </section>
 
             <section className="home-cemeteries">
