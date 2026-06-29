@@ -105,8 +105,9 @@ Datenbank:
 
 - PostgreSQL läuft als Service `db` mit persistentem Volume `postgres_data`.
 - Das Schema kommt aus `GRAVE_DB_CONTEXT/sql/schema.sql` und wird beim ersten Start eines leeren Volumes importiert.
-- Die Excel-Daten aus dem DB-Repo werden nicht automatisch bei jedem Start neu importiert, damit Produktivdaten nicht versehentlich überschrieben werden.
-- Initialer oder gezielter Reimport:
+- Die Excel-Daten aus dem DB-Repo werden beim ersten Start eines leeren Volumes automatisch importiert.
+- Der automatische Import läuft nicht bei jedem Containerstart erneut, sondern nur bei der PostgreSQL-Initialisierung eines neuen Volumes.
+- Gezielter Reimport in ein bestehendes Volume:
 
 ```bash
 docker compose --profile import run --rm db-import
