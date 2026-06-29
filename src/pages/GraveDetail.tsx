@@ -290,9 +290,13 @@ const CemeteryMap = ({ latitude, longitude, name, address }: CemeteryMapProps) =
 };
 
 const buildDescriptionParagraphs = (grave: GraveRecord, fullName: string) => {
+    const gravePosition = [
+        grave.graveField && `im Grabfeld ${grave.graveField}`,
+        grave.graveNumber && `in Grab ${grave.graveNumber}`,
+    ].filter(Boolean).join(' ');
     const graveLocation = [
         `${fullName} liegt begraben auf dem Friedhof ${grave.cemeteryName}`,
-        grave.graveNumber && `in Grab ${grave.graveNumber}`,
+        gravePosition,
     ].filter(Boolean).join(' ');
 
     const deathDetails = [

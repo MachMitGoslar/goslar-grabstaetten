@@ -93,8 +93,13 @@ const mapRowToGrave = (row) => {
     const graveFieldLongitude = toNumber(row.grave_field_longitude ?? row.grave_field_location_longitude);
     const graveFieldLocationAddress = row.grave_field_location_address ?? '';
     const graveFieldLocationTitle = row.grave_field_location_title ?? '';
+    const graveField = row.grave_field ?? '';
     const graveNumber = row.grave_number ?? '';
-    const cemeteryLabel = [cemeteryName, graveNumber && `Grab ${graveNumber}`]
+    const cemeteryLabel = [
+        cemeteryName,
+        graveField && `Grabfeld ${graveField}`,
+        graveNumber && `Grab ${graveNumber}`,
+    ]
         .filter(Boolean)
         .join(' · ');
     const displayLastName = row.birth_name
@@ -130,11 +135,10 @@ const mapRowToGrave = (row) => {
         age: getAge(row.age_years),
         status: row.occupation_or_status ?? '',
         note: row.note ?? '',
-        remark: row.relative_location ?? '',
         cemetery: cemeteryLabel,
         cemeteryName,
         cemeteryAddress,
-        graveField: row.grave_field ?? '',
+        graveField,
         graveFieldLocationTitle,
         graveFieldLocationAddress,
         graveFieldLatitude,
@@ -157,7 +161,6 @@ const baseQuery = `
         b.death_register,
         b.burial_date,
         b.burial_date_precision,
-        b.relative_location,
         p.last_name,
         p.first_name,
         p.birth_name,
@@ -165,7 +168,6 @@ const baseQuery = `
         p.birth_date,
         p.birth_date_precision,
         p.birth_place,
-        p.residence,
         p.occupation_or_status,
         p.death_date,
         p.death_date_precision,
