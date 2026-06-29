@@ -1,0 +1,6 @@
+[submodule "submodules/cemetery-tour"]
+	path = submodules/cemetery-tour
+	url = https://github.com/MachMitGoslar/cemetery-tour.git
+[submodule "submodules/grave-db"]
+	path = submodules/grave-db
+	url = https://github.com/MachMitGoslar/grave-db.git

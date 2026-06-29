@@ -57,14 +57,15 @@ Dateien:
 docker-compose.yml          Compose-Setup für Gateway, React, Tour, API und DB
 Dockerfile.web              Production-Build der React-App
 Dockerfile.api              Production-Container für die Express-API
-docker/tour.Dockerfile      generischer Production-Build für die Angular-Tour
+submodules/cemetery-tour/   Angular-Tour inkl. Dockerfile
+submodules/grave-db/        PostgreSQL-Schema, Excel-Daten und Importer
 docker/nginx/default.conf   Reverse Proxy für /, /tour/ und /api/
-docker/db/init/             optionale SQL-/Dump-Dateien für den ersten DB-Start
 ```
 
 Konfiguration vorbereiten:
 
 ```bash
+git submodule update --init --recursive
 cp .env.docker.example .env
 ```
 
@@ -75,18 +76,18 @@ HTTP_PORT=8080
 POSTGRES_DB=gravedb
 POSTGRES_USER=grave
 POSTGRES_PASSWORD=...
-GRAVE_DB_CONTEXT=../../digitalisierung/grave-db
+GRAVE_DB_CONTEXT=./submodules/grave-db
 GRAVE_DB_DOCKERFILE=Dockerfile
 GRAVE_DB_IMPORTER_DOCKERFILE=Dockerfile.importer
-CEMETERY_TOUR_CONTEXT=../../TannenTrails
+CEMETERY_TOUR_CONTEXT=./submodules/cemetery-tour
 CEMETERY_TOUR_DOCKERFILE=Dockerfile
 CEMETERY_TOUR_BUILD_COMMAND=npm run build -- --base-href /tour/ --deploy-url /tour/
 CEMETERY_TOUR_DIST_DIR=www
 ```
 
-`GRAVE_DB_CONTEXT` muss auf das `grave-db`-Repo zeigen. Der DB-Dockerfile basiert auf PostgreSQL und legt das Schema beim ersten Start eines leeren Volumes an. Der Importer-Dockerfile baut einen separaten Python-Container für den Excel-Import.
+`GRAVE_DB_CONTEXT` zeigt standardmäßig auf das `grave-db`-Submodule. Der DB-Dockerfile basiert auf PostgreSQL und legt das Schema beim ersten Start eines leeren Volumes an. Der Importer-Dockerfile baut einen separaten Python-Container für den Excel-Import.
 
-`CEMETERY_TOUR_CONTEXT` muss auf das Angular-Projekt zeigen. `CEMETERY_TOUR_DOCKERFILE` ist der Dockerfile im Tour-Repo. `CEMETERY_TOUR_DIST_DIR` muss auf den Ordner zeigen, der nach dem Angular-Build die `index.html` enthält.
+`CEMETERY_TOUR_CONTEXT` zeigt standardmäßig auf das Angular-Tour-Submodule. `CEMETERY_TOUR_DOCKERFILE` ist der Dockerfile im Tour-Repo. `CEMETERY_TOUR_DIST_DIR` muss auf den Ordner zeigen, der nach dem Angular-Build die `index.html` enthält.
 
 Start:
 

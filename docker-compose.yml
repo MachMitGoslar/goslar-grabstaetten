@@ -22,7 +22,7 @@ services:
 
   tour:
     build:
-      context: ${CEMETERY_TOUR_CONTEXT:-../../TannenTrails}
+      context: ${CEMETERY_TOUR_CONTEXT:-./submodules/cemetery-tour}
       dockerfile: ${CEMETERY_TOUR_DOCKERFILE:-Dockerfile}
       args:
         BUILD_COMMAND: ${CEMETERY_TOUR_BUILD_COMMAND:-npm run build -- --base-href /tour/ --deploy-url /tour/}
@@ -44,7 +44,7 @@ services:
 
   db:
     build:
-      context: ${GRAVE_DB_CONTEXT:-../../digitalisierung/grave-db}
+      context: ${GRAVE_DB_CONTEXT:-./submodules/grave-db}
       dockerfile: ${GRAVE_DB_DOCKERFILE:-Dockerfile}
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-gravedb}
@@ -61,7 +61,7 @@ services:
 
   db-import:
     build:
-      context: ${GRAVE_DB_CONTEXT:-../../digitalisierung/grave-db}
+      context: ${GRAVE_DB_CONTEXT:-./submodules/grave-db}
       dockerfile: ${GRAVE_DB_IMPORTER_DOCKERFILE:-Dockerfile.importer}
     profiles:
       - import
