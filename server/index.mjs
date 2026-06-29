@@ -12,9 +12,65 @@ const host = process.env.API_HOST ?? '127.0.0.1';
 const databaseUrl = process.env.DATABASE_URL ?? 'postgresql://grave:grave@localhost:5432/gravedb';
 
 const pool = new Pool({ connectionString: databaseUrl });
+const startedAt = new Date();
 const cemeteries = JSON.parse(
     await readFile(resolve(__dirname, '../src/data/cemeteries.json'), 'utf8'),
 );
+
+const redactDatabaseUrl = (value) => value.replace(/:\/\/([^:/?#]+):([^@/?#]+)@/, '://$1:***@');
+
+const logInfo = (message, details = {}) => {
+    console.log(JSON.stringify({
+        level: 'info',
+        message,
+        timestamp: new Date().toISOString(),
+        ...details,
+    }));
+};
+
+const logError = (message, error, details = {}) => {
+    console.error(JSON.stringify({
+        level: 'error',
+        message,
+        timestamp: new Date().toISOString(),
+        error: {
+            message: error?.message,
+            stack: error?.stack,
+            code: error?.code,
+            detail: error?.detail,
+            hint: error?.hint,
+        },
+        ...details,
+    }));
+};
+
+logInfo('Grave API booting', {
+    host,
+    port,
+    databaseUrl: redactDatabaseUrl(databaseUrl),
+    nodeEnv: process.env.NODE_ENV ?? 'unset',
+});
+
+pool.on('error', (error) => {
+    logError('Unexpected PostgreSQL pool error', error);
+});
+
+app.use((request, response, next) => {
+    const requestStartedAt = process.hrtime.bigint();
+
+    response.on('finish', () => {
+        const durationMs = Number(process.hrtime.bigint() - requestStartedAt) / 1_000_000;
+
+        logInfo('HTTP request completed', {
+            method: request.method,
+            path: request.path,
+            statusCode: response.statusCode,
+            durationMs: Math.round(durationMs),
+        });
+    });
+
+    next();
+});
 
 const cemeteryNames = {
     Hi: 'Hildesheimer Straße',
@@ -193,8 +249,12 @@ const baseQuery = `
 app.get('/api/health', async (_request, response) => {
     try {
         await pool.query('SELECT 1');
-        response.json({ ok: true });
+        response.json({
+            ok: true,
+            uptimeSeconds: Math.round((Date.now() - startedAt.getTime()) / 1000),
+        });
     } catch (error) {
+        logError('Health check failed', error);
         response.status(500).json({ ok: false, error: error.message });
     }
 });
@@ -342,6 +402,19 @@ app.get('/api/graves', async (request, response) => {
         const limit = parsePageNumber(request.query.limit, 80, 200);
         const offset = parsePageNumber(request.query.offset, 0, Number.MAX_SAFE_INTEGER);
         const { params, whereSql } = buildGravesWhere(request.query);
+
+        logInfo('Loading graves', {
+            limit,
+            offset,
+            queryKeys: Object.keys(request.query),
+            hasSearchQuery: Boolean(String(request.query.q ?? '').trim()),
+            cemeteryFilter: String(request.query.cemetery ?? '').trim() || undefined,
+            birthDateFilter: String(request.query.birthDate ?? '').trim() || undefined,
+            deathDateFilter: String(request.query.deathDate ?? '').trim() || undefined,
+            whereSql,
+            paramCount: params.length,
+        });
+
         const [countResult, result] = await Promise.all([
             pool.query(`
                 SELECT COUNT(*)::integer AS total
@@ -369,6 +442,14 @@ app.get('/api/graves', async (request, response) => {
             ? offset + result.rows.length
             : null;
 
+        logInfo('Loaded graves', {
+            limit,
+            offset,
+            returned: result.rows.length,
+            total,
+            nextOffset,
+        });
+
         response.json({
             items: result.rows.map(mapRowToGrave),
             limit,
@@ -377,30 +458,49 @@ app.get('/api/graves', async (request, response) => {
             total,
         });
     } catch (error) {
+        logError('Failed to load graves', error, {
+            queryKeys: Object.keys(request.query),
+        });
         response.status(500).json({ error: 'Grabstellen konnten nicht geladen werden.', details: error.message });
     }
 });
 
 app.get('/api/graves/:id', async (request, response) => {
     try {
+        logInfo('Loading grave detail', { id: request.params.id });
+
         const result = await pool.query(`${baseQuery} WHERE b.id = $1 LIMIT 1`, [request.params.id]);
 
         if (result.rowCount === 0) {
+            logInfo('Grave detail not found', { id: request.params.id });
             response.status(404).json({ error: 'Grabstelle nicht gefunden.' });
             return;
         }
 
+        logInfo('Loaded grave detail', { id: request.params.id });
         response.json(mapRowToGrave(result.rows[0]));
     } catch (error) {
+        logError('Failed to load grave detail', error, {
+            id: request.params.id,
+        });
         response.status(500).json({ error: 'Grabstelle konnte nicht geladen werden.', details: error.message });
     }
 });
 
+app.use((error, request, response, _next) => {
+    logError('Unhandled API error', error, {
+        method: request.method,
+        path: request.path,
+    });
+
+    response.status(500).json({ error: 'Interner API-Fehler.' });
+});
+
 const server = app.listen(port, host, () => {
-    console.log(`Grave API listening on http://${host}:${port}`);
+    logInfo('Grave API listening', { url: `http://${host}:${port}` });
 });
 
 server.on('error', (error) => {
-    console.error('Grave API failed to start:', error);
+    logError('Grave API failed to start', error);
     process.exitCode = 1;
 });
