@@ -1,0 +1,10 @@
+.git
+.idea
+.DS_Store
+node_modules
+dist
+logs
+*.log
+.env
+.env.*
+!.env.docker.example

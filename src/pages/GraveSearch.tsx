@@ -9,7 +9,7 @@ import cemeteries from '../data/cemeteries.json';
 import './GraveSearch.css';
 
 const pageSize = 80;
-const searchStateStorageKey = 'grave-search-state';
+const searchStateStorageKey = 'grave-search-state-v2';
 const cemeteryOptions = (cemeteries as Array<{ name: string }>)
     .map((cemetery) => cemetery.name)
     .sort((left, right) => left.localeCompare(right, 'de'));
@@ -266,6 +266,10 @@ const readStoredSearchState = (): StoredSearchState | null => {
         const state = JSON.parse(serializedState) as Partial<StoredSearchState>;
 
         if (!state.filters || !Array.isArray(state.graves)) {
+            return null;
+        }
+
+        if (state.graves.length === 0 && (state.totalGraves ?? 0) === 0) {
             return null;
         }
 
