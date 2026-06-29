@@ -13,10 +13,14 @@ export type GraveRecord = {
     age: string;
     status: string;
     note: string;
-    remark: string;
     cemetery: string;
     cemeteryName: string;
     cemeteryAddress: string;
+    graveField: string;
+    graveFieldLocationTitle: string;
+    graveFieldLocationAddress: string;
+    graveFieldLatitude?: number;
+    graveFieldLongitude?: number;
     cemeteryImage: string;
     cemeteryImagePath: string;
     cemeteryUrl: string;

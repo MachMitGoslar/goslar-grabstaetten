@@ -43,6 +43,16 @@ const getCemeteryAddress = (cemetery) => {
     return `${cemetery.street}, ${cemetery.zipCode} ${cemetery.city}`;
 };
 
+const toNumber = (value) => {
+    if (value === null || value === undefined) {
+        return undefined;
+    }
+
+    const numericValue = Number(value);
+
+    return Number.isFinite(numericValue) ? numericValue : undefined;
+};
+
 const formatDate = (dateValue, precision) => {
     if (!dateValue) {
         return 'Unbekannt';
@@ -79,8 +89,17 @@ const mapRowToGrave = (row) => {
     const cemetery = getCemetery(row.cemetery_code);
     const cemeteryName = cemetery?.name ?? cemeteryNames[row.cemetery_code] ?? row.cemetery_code ?? 'Unbekannt';
     const cemeteryAddress = getCemeteryAddress(cemetery);
+    const graveFieldLatitude = toNumber(row.grave_field_latitude ?? row.grave_field_location_latitude);
+    const graveFieldLongitude = toNumber(row.grave_field_longitude ?? row.grave_field_location_longitude);
+    const graveFieldLocationAddress = row.grave_field_location_address ?? '';
+    const graveFieldLocationTitle = row.grave_field_location_title ?? '';
+    const graveField = row.grave_field ?? '';
     const graveNumber = row.grave_number ?? '';
-    const cemeteryLabel = [cemeteryName, graveNumber && `Grab ${graveNumber}`]
+    const cemeteryLabel = [
+        cemeteryName,
+        graveField && `Grabfeld ${graveField}`,
+        graveNumber && `Grab ${graveNumber}`,
+    ]
         .filter(Boolean)
         .join(' · ');
     const displayLastName = row.birth_name
@@ -116,10 +135,14 @@ const mapRowToGrave = (row) => {
         age: getAge(row.age_years),
         status: row.occupation_or_status ?? '',
         note: row.note ?? '',
-        remark: row.relative_location ?? '',
         cemetery: cemeteryLabel,
         cemeteryName,
         cemeteryAddress,
+        graveField,
+        graveFieldLocationTitle,
+        graveFieldLocationAddress,
+        graveFieldLatitude,
+        graveFieldLongitude,
         cemeteryImagePath: cemetery?.image ?? '',
         cemeteryUrl: cemetery?.url ?? '',
         cemeteryLatitude: cemetery?.latitude,
@@ -138,7 +161,6 @@ const baseQuery = `
         b.death_register,
         b.burial_date,
         b.burial_date_precision,
-        b.relative_location,
         p.last_name,
         p.first_name,
         p.birth_name,
@@ -146,7 +168,6 @@ const baseQuery = `
         p.birth_date,
         p.birth_date_precision,
         p.birth_place,
-        p.residence,
         p.occupation_or_status,
         p.death_date,
         p.death_date_precision,
@@ -155,10 +176,18 @@ const baseQuery = `
         g.grave_field,
         g.grave_number,
         g.grave_type,
-        g.form
+        g.form,
+        g.grave_field_location_id,
+        g.grave_field_latitude,
+        g.grave_field_longitude,
+        l.title AS grave_field_location_title,
+        l.address AS grave_field_location_address,
+        l.latitude AS grave_field_location_latitude,
+        l.longitude AS grave_field_location_longitude
     FROM burials b
     JOIN persons p ON p.id = b.person_id
     LEFT JOIN graves g ON g.id = b.grave_id
+    LEFT JOIN grave_field_locations l ON l.id = g.grave_field_location_id
 `;
 
 app.get('/api/health', async (_request, response) => {
