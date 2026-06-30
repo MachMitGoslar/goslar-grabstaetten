@@ -9,7 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = Number(process.env.API_PORT ?? 3001);
 const host = process.env.API_HOST ?? '127.0.0.1';
-const databaseUrl = process.env.DATABASE_URL ?? 'postgresql://grave:grave@localhost:5432/gravedb';
+const databaseUrl = process.env.DATABASE_URL ?? 'postgresql://grave:grave@db:5432/gravedb';
 
 const pool = new Pool({ connectionString: databaseUrl });
 const startedAt = new Date();
