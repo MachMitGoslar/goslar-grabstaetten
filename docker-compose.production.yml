@@ -1,0 +1,60 @@
+services:
+  gateway:
+    image: nginx:1.27-alpine
+    depends_on:
+      - web
+      - tour
+      - api
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8080}:80"
+    volumes:
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped
+
+  web:
+    image: ${GHCR_IMAGE_PREFIX:-ghcr.io/machmitgoslar/goslar-grabstaetten}-web:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+
+  tour:
+    image: ${GHCR_IMAGE_PREFIX:-ghcr.io/machmitgoslar/goslar-grabstaetten}-tour:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+
+  api:
+    image: ${GHCR_IMAGE_PREFIX:-ghcr.io/machmitgoslar/goslar-grabstaetten}-api:${IMAGE_TAG:-latest}
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER:-grave}:${POSTGRES_PASSWORD:-grave}@db:5432/${POSTGRES_DB:-gravedb}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: ${GHCR_IMAGE_PREFIX:-ghcr.io/machmitgoslar/goslar-grabstaetten}-db:${IMAGE_TAG:-latest}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-gravedb}
+      POSTGRES_USER: ${POSTGRES_USER:-grave}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-grave}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  db-import:
+    image: ${GHCR_IMAGE_PREFIX:-ghcr.io/machmitgoslar/goslar-grabstaetten}-db-import:${IMAGE_TAG:-latest}
+    profiles:
+      - import
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-grave}:${POSTGRES_PASSWORD:-grave}@db:5432/${POSTGRES_DB:-gravedb}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  postgres_data:

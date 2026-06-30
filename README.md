@@ -69,6 +69,16 @@ git submodule update --init --recursive
 cp .env.docker.example .env
 ```
 
+Submodules aktualisieren:
+
+```bash
+git submodule update --remote --merge submodules/cemetery-tour submodules/grave-db
+git add .gitmodules submodules/cemetery-tour submodules/grave-db
+git commit -m "chore: update submodules"
+```
+
+Beide Submodules sind in `.gitmodules` auf `branch = main` verknüpft. Der Parent-Repo-Commit pinnt trotzdem immer konkrete Submodule-Commits, damit Deployments reproduzierbar bleiben.
+
 Wichtige Werte in `.env`:
 
 ```text
@@ -94,6 +104,26 @@ Start:
 ```bash
 docker compose up -d --build
 ```
+
+Production-Start mit GHCR-Images:
+
+```bash
+cp .env.production.example .env
+docker compose -f docker-compose.production.yml pull
+docker compose -f docker-compose.production.yml up -d
+```
+
+Die Production-Datei nutzt veröffentlichte Images aus der GitHub Container Registry:
+
+```text
+ghcr.io/machmitgoslar/goslar-grabstaetten-web
+ghcr.io/machmitgoslar/goslar-grabstaetten-api
+ghcr.io/machmitgoslar/goslar-grabstaetten-tour
+ghcr.io/machmitgoslar/goslar-grabstaetten-db
+ghcr.io/machmitgoslar/goslar-grabstaetten-db-import
+```
+
+`IMAGE_TAG` steuert die Version. Für reproduzierbare Deployments sollte ein `sha-...`-Tag oder Release-Tag statt `latest` genutzt werden.
 
 Plesk:
 
