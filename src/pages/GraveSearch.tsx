@@ -151,6 +151,19 @@ export const GraveSearchPage = () => {
         }
     }, [isLoadingMore, nextOffset, searchParams]);
 
+    const scrollToTop = () => {
+        latestScrollYRef.current = 0;
+        window.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
+        writeStoredSearchState({
+            filters,
+            graves,
+            nextOffset,
+            query,
+            scrollY: 0,
+            totalGraves,
+        });
+    };
+
     return (
         <main className="grave-search-page">
             <button
@@ -242,6 +255,15 @@ export const GraveSearchPage = () => {
                     onReset={() => setFilters(defaultGraveFilters)}
                 />
             )}
+
+            <button
+                type="button"
+                className="grave-search-scroll-top"
+                aria-label="Nach oben scrollen"
+                onClick={scrollToTop}
+            >
+                <ArrowUpIcon />
+            </button>
         </main>
     );
 };
@@ -338,4 +360,17 @@ const GraveSearchLoader = () => (
 
 const GraveSearchSpinner = () => (
     <span className="grave-search-spinner" aria-hidden="true" />
+);
+
+const ArrowUpIcon = () => (
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+        <path
+            d="M12 19V5M5 12l7-7 7 7"
+            fill="none"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2.8"
+        />
+    </svg>
 );
