@@ -125,6 +125,21 @@ ghcr.io/machmitgoslar/goslar-grabstaetten-db-import
 
 `IMAGE_TAG` steuert die Version. Für reproduzierbare Deployments sollte ein `sha-...`-Tag oder Release-Tag statt `latest` genutzt werden.
 
+DB-Verbindung im Production-Compose:
+
+```text
+POSTGRES_DB=gravedb
+POSTGRES_USER=grave
+POSTGRES_PASSWORD=...
+POSTGRES_HOST=db
+```
+
+`POSTGRES_HOST=db` funktioniert nur, wenn `api` und `db` im selben Compose-Projekt bzw. Docker-Netzwerk laufen. Falls Plesk die Datenbank separat startet, muss `POSTGRES_HOST` auf den tatsächlichen Container-/Service-Namen gesetzt werden oder `DATABASE_URL` vollständig überschrieben werden:
+
+```text
+DATABASE_URL=postgresql://grave:...@<db-host>:5432/gravedb
+```
+
 Plesk:
 
 - Domain `friedhof.goslar.de` auf den Server zeigen lassen.
