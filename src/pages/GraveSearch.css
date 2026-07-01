@@ -127,6 +127,29 @@
     outline-offset: 4px;
 }
 
+.grave-search-scroll-top {
+    align-items: center;
+    background: var(--color-primary, #A88F35);
+    border: none;
+    border-radius: 999px;
+    bottom: max(18px, env(safe-area-inset-bottom));
+    box-shadow: 0 14px 28px rgba(40, 34, 15, 0.24), 0 4px 10px rgba(40, 34, 15, 0.18);
+    color: #FFFFFF;
+    cursor: pointer;
+    display: inline-flex;
+    height: 52px;
+    justify-content: center;
+    position: fixed;
+    right: max(18px, env(safe-area-inset-right));
+    width: 52px;
+    z-index: 20;
+}
+
+.grave-search-scroll-top:focus-visible {
+    outline: 3px solid #FFFFFF;
+    outline-offset: 3px;
+}
+
 @keyframes grave-search-spin {
     to {
         transform: rotate(360deg);
@@ -160,6 +183,13 @@
 
     .grave-search-list {
         gap: 17px;
+    }
+
+    .grave-search-scroll-top {
+        bottom: 28px;
+        height: 58px;
+        right: 28px;
+        width: 58px;
     }
 }
 
