@@ -31,14 +31,14 @@ export const HomePage = () => {
                 <h1 className="home-title">Goslarer Gräber</h1>
 
                 <p className="home-subtitle">
-                    Nutze unsere Grabstellensuche oder starte deine Geotour entlang
-                    bekannter Goslarer Gräber
+                    Nutze unsere Grabstellensuche oder starte deine Friedhofstour entlang
+                    bedeutender Goslarer Gräber
                 </p>
             </section>
 
             <section className="home-actions">
                 <ButtonTile text="Grabstellensuche" to="/grabstellensuche" />
-                <ButtonTile text="Friedhofstour" to="/geotour" />
+                <ButtonTile text="Friedhofstour Erinnerungskultur" to="/geotour" />
             </section>
 
             <section className="home-cemeteries">
