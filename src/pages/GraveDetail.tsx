@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import * as L from 'leaflet';
 import type { Map as LeafletMapInstance } from 'leaflet';
 import { useNavigate, useParams } from 'react-router-dom';
+import { Seo } from '../components/Seo.tsx';
 import { fetchGrave, type GraveRecord } from '../data/graveData.ts';
 import 'leaflet/dist/leaflet.css';
 import './GraveDetail.css';
@@ -49,10 +50,18 @@ export const GraveDetailPage = () => {
 
     if (!graveId || isLoading || error || !grave) {
         return (
-            <main className="grave-detail-missing">
-                <BackButton onClick={() => navigate('/grabstellensuche')} />
-                <p>{!graveId || error ? 'Diese Grabstelle wurde nicht gefunden.' : 'Grabstelle wird geladen.'}</p>
-            </main>
+            <>
+                <Seo
+                    title="Grabstelle"
+                    description="Details zu einer Grabstelle auf den Goslarer Friedhöfen."
+                    path={graveId ? `/grabstellensuche/${graveId}` : '/grabstellensuche'}
+                />
+
+                <main className="grave-detail-missing">
+                    <BackButton onClick={() => navigate('/grabstellensuche')} />
+                    <p>{!graveId || error ? 'Diese Grabstelle wurde nicht gefunden.' : 'Grabstelle wird geladen.'}</p>
+                </main>
+            </>
         );
     }
 
@@ -62,8 +71,16 @@ export const GraveDetailPage = () => {
     const navigationUrl = getNavigationUrl(mapTarget);
 
     return (
-        <main className="grave-detail-page">
-            <BackButton onClick={() => navigate('/grabstellensuche')} />
+        <>
+            <Seo
+                title={fullName || 'Grabstelle'}
+                description={`Informationen zur Grabstelle von ${fullName || grave.displayLastName} auf dem Friedhof ${grave.cemeteryName}.`}
+                path={`/grabstellensuche/${grave.id}`}
+                image={grave.cemeteryImage}
+            />
+
+            <main className="grave-detail-page">
+                <BackButton onClick={() => navigate('/grabstellensuche')} />
 
             <section className="grave-detail-hero" aria-label={grave.cemeteryName}>
                 {grave.cemeteryImage && (
@@ -127,7 +144,8 @@ export const GraveDetailPage = () => {
                     </a>
                 )}
             </section>
-        </main>
+            </main>
+        </>
     );
 };
 

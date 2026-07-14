@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom';
+import { Seo } from '../components/Seo.tsx';
 import './GeoTour.css';
 
 const geotourUrl = import.meta.env.VITE_GEOTOUR_URL ?? 'http://localhost:4200';
@@ -7,30 +8,38 @@ export const GeoTourPage = () => {
     const navigate = useNavigate();
 
     return (
-        <main className="geo-tour-page">
-            <header className="geo-tour-header">
-                <button
-                    type="button"
-                    className="geo-tour-back"
-                    aria-label="Zurück"
-                    onClick={() => navigate('/')}
-                >
-                    <BackIcon />
-                </button>
+        <>
+            <Seo
+                title="Friedhofstour Erinnerungskultur"
+                description="Starte die digitale Friedhofstour Erinnerungskultur und entdecke bedeutende Stationen auf den Goslarer Friedhöfen."
+                path="/geotour"
+            />
 
-            </header>
+            <main className="geo-tour-page">
+                <header className="geo-tour-header">
+                    <button
+                        type="button"
+                        className="geo-tour-back"
+                        aria-label="Zurück"
+                        onClick={() => navigate('/')}
+                    >
+                        <BackIcon />
+                    </button>
 
-            <section className="geo-tour-frame-wrap" aria-label="Geotour Ansicht">
-                <iframe
-                    className="geo-tour-frame"
-                    src={geotourUrl}
-                    title="Geotour"
-                    allow="geolocation; fullscreen"
-                    loading="lazy"
-                    referrerPolicy="strict-origin-when-cross-origin"
-                />
-            </section>
-        </main>
+                </header>
+
+                <section className="geo-tour-frame-wrap" aria-label="Geotour Ansicht">
+                    <iframe
+                        className="geo-tour-frame"
+                        src={geotourUrl}
+                        title="Geotour"
+                        allow="geolocation; fullscreen"
+                        loading="lazy"
+                        referrerPolicy="strict-origin-when-cross-origin"
+                    />
+                </section>
+            </main>
+        </>
     );
 };
 
