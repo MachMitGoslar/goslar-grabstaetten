@@ -1,5 +1,6 @@
 import {CemeteryCard} from "../components/CemeteryCard.tsx";
 import {ButtonTile} from "../components/ButtonTile.tsx";
+import { Seo } from '../components/Seo.tsx';
 import cemeteries from '../data/cemeteries.json';
 import './Home.css';
 
@@ -26,42 +27,49 @@ const getCemeteryImage = (imagePath: string) => {
 
 export const HomePage = () => {
     return (
-        <main className="home-page">
-            <section className="home-hero">
-                <h1 className="home-title">Goslarer Gräber</h1>
+        <>
+            <Seo
+                description="Finde Grabstellen auf den Goslarer Friedhöfen und entdecke die Friedhofstour Erinnerungskultur."
+                path="/"
+            />
 
-                <p className="home-subtitle">
-                    Nutze unsere Grabstellensuche oder starte deine Friedhofstour entlang
-                    bedeutender Goslarer Gräber
-                </p>
-            </section>
+            <main className="home-page">
+                <section className="home-hero">
+                    <h1 className="home-title">Goslarer Gräber</h1>
 
-            <section className="home-actions">
-                <ButtonTile text="Grabstellensuche" to="/grabstellensuche" />
-                <ButtonTile text="Friedhofstour Erinnerungskultur" to="/geotour" />
-            </section>
+                    <p className="home-subtitle">
+                        Nutze unsere Grabstellensuche oder starte deine Friedhofstour entlang
+                        bedeutender Goslarer Gräber
+                    </p>
+                </section>
 
-            <section className="home-cemeteries">
-                <h2 className="home-section-title">Goslarer Friedhöfe</h2>
+                <section className="home-actions">
+                    <ButtonTile text="Grabstellensuche" to="/grabstellensuche" />
+                    <ButtonTile text="Friedhofstour Erinnerungskultur" to="/geotour" />
+                </section>
 
-                <p className="home-section-subtitle">
-                    Erfahre mehr über die Friedhöfe in Goslar.
-                </p>
+                <section className="home-cemeteries">
+                    <h2 className="home-section-title">Goslarer Friedhöfe</h2>
 
-                <div className="home-cemetery-list">
-                    {(cemeteries as Cemetery[]).map((cemetery) => (
-                        <CemeteryCard
-                            key={`${cemetery.name}-${cemetery.street}`}
-                            name={cemetery.name}
-                            street={cemetery.street}
-                            zipCode={cemetery.zipCode}
-                            city={cemetery.city}
-                            image={getCemeteryImage(cemetery.image)}
-                            href={cemetery.url}
-                        />
-                    ))}
-                </div>
-            </section>
-        </main>
+                    <p className="home-section-subtitle">
+                        Erfahre mehr über die Friedhöfe in Goslar.
+                    </p>
+
+                    <div className="home-cemetery-list">
+                        {(cemeteries as Cemetery[]).map((cemetery) => (
+                            <CemeteryCard
+                                key={`${cemetery.name}-${cemetery.street}`}
+                                name={cemetery.name}
+                                street={cemetery.street}
+                                zipCode={cemetery.zipCode}
+                                city={cemetery.city}
+                                image={getCemeteryImage(cemetery.image)}
+                                href={cemetery.url}
+                            />
+                        ))}
+                    </div>
+                </section>
+            </main>
+        </>
     );
 };

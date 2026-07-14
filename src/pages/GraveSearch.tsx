@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { GraveCard } from '../components/GraveCard.tsx';
 import { GraveFilterModal } from '../components/GraveFilterModal.tsx';
+import { Seo } from '../components/Seo.tsx';
 import { defaultGraveFilters, type GraveFilters } from '../components/graveFilterState.ts';
 import SearchBar from '../components/SearchBar.tsx';
 import { fetchGravesPage, type GraveRecord, type GraveSearchParams } from '../data/graveData.ts';
@@ -165,24 +166,31 @@ export const GraveSearchPage = () => {
     };
 
     return (
-        <main className="grave-search-page">
-            <button
-                type="button"
-                className="grave-search-back"
-                aria-label="Zurück"
-                onClick={() => navigate('/')}
-            >
-                <BackIcon />
-            </button>
+        <>
+            <Seo
+                title="Grabstellensuche"
+                description="Suche nach Grabstellen auf den Goslarer Friedhöfen und filtere nach Namen, Geburtsdaten, Sterbedaten und Friedhof."
+                path="/grabstellensuche"
+            />
 
-            <section className="grave-search-hero">
-                <h1 className="grave-search-title">Grabstellensuche</h1>
+            <main className="grave-search-page">
+                <button
+                    type="button"
+                    className="grave-search-back"
+                    aria-label="Zurück"
+                    onClick={() => navigate('/')}
+                >
+                    <BackIcon />
+                </button>
 
-                <p className="grave-search-subtitle">
-                    Nutze unsere Grabstellensuche. Gebe deinen Suchbegriff ein und
-                    starte die Suche. Zusätzlich kannst du die Ergebnisse filtern.
-                </p>
-            </section>
+                <section className="grave-search-hero">
+                    <h1 className="grave-search-title">Grabstellensuche</h1>
+
+                    <p className="grave-search-subtitle">
+                        Nutze unsere Grabstellensuche. Gebe deinen Suchbegriff ein und
+                        starte die Suche. Zusätzlich kannst du die Ergebnisse filtern.
+                    </p>
+                </section>
 
             <section className="grave-search-controls">
                 <SearchBar
@@ -264,7 +272,8 @@ export const GraveSearchPage = () => {
             >
                 <ArrowUpIcon />
             </button>
-        </main>
+            </main>
+        </>
     );
 };
 
@@ -278,6 +287,10 @@ type StoredSearchState = {
 };
 
 const readStoredSearchState = (): StoredSearchState | null => {
+    if (typeof window === 'undefined') {
+        return null;
+    }
+
     try {
         const serializedState = window.sessionStorage.getItem(searchStateStorageKey);
 
@@ -312,6 +325,10 @@ const readStoredSearchState = (): StoredSearchState | null => {
 };
 
 const writeStoredSearchState = (state: StoredSearchState) => {
+    if (typeof window === 'undefined') {
+        return;
+    }
+
     window.sessionStorage.setItem(searchStateStorageKey, JSON.stringify(state));
 };
 

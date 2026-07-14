@@ -6,7 +6,8 @@
   "scripts": {
     "api": "node server/index.mjs",
     "dev": "vite --host 0.0.0.0",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && npm run build:ssg",
+    "build:ssg": "vite build && vite build --ssr src/entry-server.tsx --outDir dist/server --emptyOutDir false && node scripts/prerender.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -17,7 +18,12 @@
     "pg": "^8.21.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "react-router-dom": "^7.16.0"
+    "react-helmet-async": "^3.0.0",
+    "react-router-dom": "^7.16.0",
+    "vite-plugin-html": "^3.2.2",
+    "vite-plugin-pages": "^0.33.3",
+    "vite-plugin-sitemap": "^0.8.2",
+    "vite-ssg": "^28.3.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
