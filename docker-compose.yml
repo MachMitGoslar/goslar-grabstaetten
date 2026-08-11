@@ -46,6 +46,8 @@ services:
     build:
       context: ${GRAVE_DB_CONTEXT:-./submodules/grave-db}
       dockerfile: ${GRAVE_DB_DOCKERFILE:-Dockerfile}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-gravedb}
       POSTGRES_USER: ${POSTGRES_USER:-grave}

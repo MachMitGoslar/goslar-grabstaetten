@@ -13,6 +13,7 @@ const databaseUrl = process.env.DATABASE_URL ?? 'postgresql://grave:grave@db:543
 
 const pool = new Pool({ connectionString: databaseUrl });
 const startedAt = new Date();
+let analyticsTablePromise;
 const cemeteries = JSON.parse(
     await readFile(resolve(__dirname, '../src/data/cemeteries.json'), 'utf8'),
 );
@@ -70,6 +71,43 @@ app.use((request, response, next) => {
     });
 
     next();
+});
+
+app.use(express.json({ limit: '4kb' }));
+
+const ensureAnalyticsTable = () => {
+    analyticsTablePromise ??= pool.query(`
+        CREATE TABLE IF NOT EXISTS click_events (
+            id bigserial PRIMARY KEY,
+            clicked_at timestamptz NOT NULL DEFAULT now(),
+            path text NOT NULL CHECK (char_length(path) BETWEEN 1 AND 512)
+        );
+        CREATE INDEX IF NOT EXISTS click_events_clicked_at_idx ON click_events (clicked_at);
+        CREATE INDEX IF NOT EXISTS click_events_path_idx ON click_events (path)
+    `).catch((error) => {
+        analyticsTablePromise = undefined;
+        throw error;
+    });
+
+    return analyticsTablePromise;
+};
+
+app.post('/api/analytics/click', async (request, response) => {
+    const path = typeof request.body?.path === 'string' ? request.body.path.trim() : '';
+
+    if (!path.startsWith('/') || path.length > 512 || path.includes('?') || path.includes('#')) {
+        response.status(400).json({ error: 'Ungültiger Seitenpfad.' });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        await pool.query('INSERT INTO click_events (path) VALUES ($1)', [path]);
+        response.status(204).end();
+    } catch (error) {
+        logError('Failed to record click', error, { path });
+        response.status(500).json({ error: 'Klick konnte nicht erfasst werden.' });
+    }
 });
 
 const cemeteryNames = {

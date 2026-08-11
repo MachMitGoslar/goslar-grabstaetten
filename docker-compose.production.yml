@@ -15,18 +15,21 @@ services:
 
   web:
     image: ${GHCR_IMAGE_PREFIX:-ghcr.io/machmitgoslar/goslar-grabstaetten}-web:${IMAGE_TAG:-latest}
+    platform: linux/amd64
     networks:
       - friedhof_internal
     restart: unless-stopped
 
   tour:
     image: ${GHCR_IMAGE_PREFIX:-ghcr.io/machmitgoslar/goslar-grabstaetten}-tour:${IMAGE_TAG:-latest}
+    platform: linux/amd64
     networks:
       - friedhof_internal
     restart: unless-stopped
 
   api:
     image: ${GHCR_IMAGE_PREFIX:-ghcr.io/machmitgoslar/goslar-grabstaetten}-api:${IMAGE_TAG:-latest}
+    platform: linux/amd64
     environment:
       API_HOST: 0.0.0.0
       API_PORT: 3001
@@ -40,6 +43,7 @@ services:
 
   db:
     image: ${GHCR_IMAGE_PREFIX:-ghcr.io/machmitgoslar/goslar-grabstaetten}-db:${IMAGE_TAG:-latest}
+    platform: linux/amd64
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-gravedb}
       POSTGRES_USER: ${POSTGRES_USER:-grave}
@@ -59,6 +63,7 @@ services:
 
   db-import:
     image: ${GHCR_IMAGE_PREFIX:-ghcr.io/machmitgoslar/goslar-grabstaetten}-db-import:${IMAGE_TAG:-latest}
+    platform: linux/amd64
     profiles:
       - import
     environment:
