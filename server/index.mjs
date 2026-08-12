@@ -80,10 +80,13 @@ const ensureAnalyticsTable = () => {
         CREATE TABLE IF NOT EXISTS click_events (
             id bigserial PRIMARY KEY,
             clicked_at timestamptz NOT NULL DEFAULT now(),
-            path text NOT NULL CHECK (char_length(path) BETWEEN 1 AND 512)
+            path text NOT NULL CHECK (char_length(path) BETWEEN 1 AND 512),
+            button_key text CHECK (char_length(button_key) BETWEEN 1 AND 200)
         );
+        ALTER TABLE click_events ADD COLUMN IF NOT EXISTS button_key text;
         CREATE INDEX IF NOT EXISTS click_events_clicked_at_idx ON click_events (clicked_at);
-        CREATE INDEX IF NOT EXISTS click_events_path_idx ON click_events (path)
+        CREATE INDEX IF NOT EXISTS click_events_path_idx ON click_events (path);
+        CREATE INDEX IF NOT EXISTS click_events_button_key_idx ON click_events (button_key)
     `).catch((error) => {
         analyticsTablePromise = undefined;
         throw error;
@@ -94,18 +97,25 @@ const ensureAnalyticsTable = () => {
 
 app.post('/api/analytics/click', async (request, response) => {
     const path = typeof request.body?.path === 'string' ? request.body.path.trim() : '';
+    const buttonKey = typeof request.body?.buttonKey === 'string' ? request.body.buttonKey.trim() : '';
 
-    if (!path.startsWith('/') || path.length > 512 || path.includes('?') || path.includes('#')) {
-        response.status(400).json({ error: 'Ungültiger Seitenpfad.' });
+    if (
+        !path.startsWith('/') || path.length > 512 || path.includes('?') || path.includes('#')
+        || !buttonKey || buttonKey.length > 200
+    ) {
+        response.status(400).json({ error: 'Ungültige Klickdaten.' });
         return;
     }
 
     try {
         await ensureAnalyticsTable();
-        await pool.query('INSERT INTO click_events (path) VALUES ($1)', [path]);
+        await pool.query(
+            'INSERT INTO click_events (path, button_key) VALUES ($1, $2)',
+            [path, buttonKey],
+        );
         response.status(204).end();
     } catch (error) {
-        logError('Failed to record click', error, { path });
+        logError('Failed to record click', error, { path, buttonKey });
         response.status(500).json({ error: 'Klick konnte nicht erfasst werden.' });
     }
 });
