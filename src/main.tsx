@@ -3,7 +3,10 @@ import { createRoot, hydrateRoot } from 'react-dom/client'
 import { HelmetProvider } from 'react-helmet-async'
 import { BrowserRouter } from 'react-router-dom'
 import { App } from './App.tsx'
+import { startClickTracking } from './analytics/clickTracking.ts'
 import './index.css'
+
+startClickTracking()
 
 const root = document.getElementById('root')!
 const app = (

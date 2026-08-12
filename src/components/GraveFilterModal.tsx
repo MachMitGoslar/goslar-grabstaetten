@@ -62,6 +62,7 @@ export const GraveFilterModal = ({
                     <div className="grave-filter-row">
                         <span className="grave-filter-label">Geburtsdatum</span>
                         <DatePicker
+                            analyticsId="Geburtsdatum"
                             value={filters.birthDate}
                             onChange={(value) => updateFilter('birthDate', value)}
                         />
@@ -70,6 +71,7 @@ export const GraveFilterModal = ({
                     <div className="grave-filter-row">
                         <span className="grave-filter-label">Todesdatum</span>
                         <DatePicker
+                            analyticsId="Todesdatum"
                             value={filters.deathDate}
                             onChange={(value) => updateFilter('deathDate', value)}
                         />
@@ -152,6 +154,7 @@ const ToggleRow = ({ label, checked, onChange }: ToggleRowProps) => (
 );
 
 type DatePickerProps = {
+    analyticsId: string;
     value: string;
     onChange: (value: string) => void;
 };
@@ -239,7 +242,7 @@ const getMonthDays = (visibleMonth: Date) => {
     });
 };
 
-const DatePicker = ({ value, onChange }: DatePickerProps) => {
+const DatePicker = ({ analyticsId, value, onChange }: DatePickerProps) => {
     const [isOpen, setIsOpen] = useState(false);
     const [visibleMonth, setVisibleMonth] = useState(() => parseVisibleMonth(value));
     const days = getMonthDays(visibleMonth);
@@ -291,6 +294,7 @@ const DatePicker = ({ value, onChange }: DatePickerProps) => {
         <div className="grave-filter-date-picker">
             <button
                 type="button"
+                data-analytics-id={`${analyticsId}: Datumsauswahl öffnen`}
                 className={`grave-filter-date-trigger${value ? ' grave-filter-date-trigger--set' : ''}`}
                 onClick={() => setIsOpen((open) => !open)}
             >
@@ -301,24 +305,25 @@ const DatePicker = ({ value, onChange }: DatePickerProps) => {
             {isOpen && (
                 <div className="grave-filter-calendar" role="dialog" aria-label="Datum auswählen">
                     <div className="grave-filter-calendar-header">
-                        <button type="button" onClick={() => shiftMonth(-1)} aria-label="Vorheriger Monat">
+                        <button type="button" data-analytics-id={`${analyticsId}: Vorheriger Monat`} onClick={() => shiftMonth(-1)} aria-label="Vorheriger Monat">
                             <ChevronIcon direction="left" />
                         </button>
                         <button
                             type="button"
+                            data-analytics-id={`${analyticsId}: Monat auswählen`}
                             className="grave-filter-calendar-month"
                             onClick={selectVisibleMonth}
                             aria-label="Monat auswählen"
                         >
                             {monthFormatter.format(visibleMonth)}
                         </button>
-                        <button type="button" onClick={() => shiftMonth(1)} aria-label="Nächster Monat">
+                        <button type="button" data-analytics-id={`${analyticsId}: Nächster Monat`} onClick={() => shiftMonth(1)} aria-label="Nächster Monat">
                             <ChevronIcon direction="right" />
                         </button>
                     </div>
 
                     <div className="grave-filter-calendar-year">
-                        <button type="button" onClick={() => shiftYear(-1)} aria-label="Vorheriges Jahr">
+                        <button type="button" data-analytics-id={`${analyticsId}: Vorheriges Jahr`} onClick={() => shiftYear(-1)} aria-label="Vorheriges Jahr">
                             <ChevronIcon direction="left" />
                         </button>
                         <input
@@ -330,7 +335,7 @@ const DatePicker = ({ value, onChange }: DatePickerProps) => {
                             onClick={selectVisibleYear}
                             onChange={(event) => setYear(event.target.value)}
                         />
-                        <button type="button" onClick={() => shiftYear(1)} aria-label="Nächstes Jahr">
+                        <button type="button" data-analytics-id={`${analyticsId}: Nächstes Jahr`} onClick={() => shiftYear(1)} aria-label="Nächstes Jahr">
                             <ChevronIcon direction="right" />
                         </button>
                     </div>
@@ -350,6 +355,7 @@ const DatePicker = ({ value, onChange }: DatePickerProps) => {
                             return (
                                 <button
                                     type="button"
+                                    data-analytics-id={`${analyticsId}: Tag ${isoDate}`}
                                     key={isoDate}
                                     className={[
                                         'grave-filter-calendar-day',
@@ -370,6 +376,7 @@ const DatePicker = ({ value, onChange }: DatePickerProps) => {
                     {value && (
                         <button
                             type="button"
+                            data-analytics-id={`${analyticsId}: Datum löschen`}
                             className="grave-filter-calendar-clear"
                             onClick={() => {
                                 onChange('');
