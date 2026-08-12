@@ -1,4 +1,40 @@
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? '';
+let lastPageView = { path: '', recordedAt: 0 };
+let lastSearchStartedAt = 0;
+
+export type AnalyticsEventType = 'button_click' | 'page_view' | 'search_started';
+
+export const recordAnalyticsEvent = (eventType: AnalyticsEventType, buttonKey?: string) => {
+    if (window.location.pathname.startsWith('/admin/')) return;
+
+    if (eventType === 'page_view') {
+        const now = Date.now();
+        if (lastPageView.path === window.location.pathname && now - lastPageView.recordedAt < 500) return;
+        lastPageView = { path: window.location.pathname, recordedAt: now };
+    }
+
+    if (eventType === 'search_started') {
+        const now = Date.now();
+        if (now - lastSearchStartedAt < 500) return;
+        lastSearchStartedAt = now;
+    }
+
+    const payload = JSON.stringify({
+        path: window.location.pathname,
+        eventType,
+        buttonKey,
+    });
+    const endpoint = `${apiBaseUrl}/api/analytics/click`;
+
+    if (navigator.sendBeacon) {
+        const body = new Blob([payload], { type: 'application/json' });
+        if (navigator.sendBeacon(endpoint, body)) return;
+    }
+
+    void fetch(endpoint, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true,
+    }).catch(() => undefined);
+};
 
 const getFallbackKey = (button: Element) => {
     const tag = button.tagName.toLowerCase();
@@ -23,6 +59,10 @@ const getButtonKey = (button: Element) => {
 };
 
 const recordClick = (event: MouseEvent) => {
+    if (window.location.pathname.startsWith('/admin/')) {
+        return;
+    }
+
     const target = event.target instanceof Element ? event.target : null;
     const button = target?.closest('button, ion-button, ion-back-button, ion-fab-button')
         ?? target?.closest('[role="button"]');
@@ -31,26 +71,7 @@ const recordClick = (event: MouseEvent) => {
         return;
     }
 
-    const payload = JSON.stringify({
-        path: window.location.pathname,
-        buttonKey: getButtonKey(button),
-    });
-    const endpoint = `${apiBaseUrl}/api/analytics/click`;
-
-    if (navigator.sendBeacon) {
-        const body = new Blob([payload], { type: 'application/json' });
-
-        if (navigator.sendBeacon(endpoint, body)) {
-            return;
-        }
-    }
-
-    void fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
-        keepalive: true,
-    }).catch(() => undefined);
+    recordAnalyticsEvent('button_click', getButtonKey(button));
 };
 
 export const startClickTracking = () => {

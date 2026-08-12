@@ -8,6 +8,7 @@ import SearchBar from '../components/SearchBar.tsx';
 import { fetchGravesPage, type GraveRecord, type GraveSearchParams } from '../data/graveData.ts';
 import cemeteries from '../data/cemeteries.json';
 import './GraveSearch.css';
+import { recordAnalyticsEvent } from '../analytics/clickTracking.ts';
 
 const pageSize = 80;
 const searchStateStorageKey = 'grave-search-state-v2';
@@ -55,6 +56,12 @@ export const GraveSearchPage = () => {
             setError('');
 
             try {
+                const hasSearchCriteria = Boolean(
+                    searchParams.query || searchParams.birthDate
+                    || searchParams.deathDate || searchParams.cemetery,
+                );
+                if (hasSearchCriteria) recordAnalyticsEvent('search_started');
+
                 const page = await fetchGravesPage(0, pageSize, searchParams, abortController.signal);
 
                 setGraves(page.items);

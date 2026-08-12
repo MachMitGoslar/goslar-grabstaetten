@@ -3,6 +3,7 @@ import pg from 'pg';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { timingSafeEqual } from 'node:crypto';
 
 const { Pool } = pg;
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -10,6 +11,8 @@ const app = express();
 const port = Number(process.env.API_PORT ?? 3001);
 const host = process.env.API_HOST ?? '127.0.0.1';
 const databaseUrl = process.env.DATABASE_URL ?? 'postgresql://grave:grave@db:5432/gravedb';
+const analyticsAdminUser = process.env.ANALYTICS_ADMIN_USER ?? '';
+const analyticsAdminPassword = process.env.ANALYTICS_ADMIN_PASSWORD ?? '';
 
 const pool = new Pool({ connectionString: databaseUrl });
 const startedAt = new Date();
@@ -81,12 +84,15 @@ const ensureAnalyticsTable = () => {
             id bigserial PRIMARY KEY,
             clicked_at timestamptz NOT NULL DEFAULT now(),
             path text NOT NULL CHECK (char_length(path) BETWEEN 1 AND 512),
-            button_key text CHECK (char_length(button_key) BETWEEN 1 AND 200)
+            button_key text CHECK (char_length(button_key) BETWEEN 1 AND 200),
+            event_type text NOT NULL DEFAULT 'button_click'
         );
         ALTER TABLE click_events ADD COLUMN IF NOT EXISTS button_key text;
+        ALTER TABLE click_events ADD COLUMN IF NOT EXISTS event_type text NOT NULL DEFAULT 'button_click';
         CREATE INDEX IF NOT EXISTS click_events_clicked_at_idx ON click_events (clicked_at);
         CREATE INDEX IF NOT EXISTS click_events_path_idx ON click_events (path);
-        CREATE INDEX IF NOT EXISTS click_events_button_key_idx ON click_events (button_key)
+        CREATE INDEX IF NOT EXISTS click_events_button_key_idx ON click_events (button_key);
+        CREATE INDEX IF NOT EXISTS click_events_event_type_idx ON click_events (event_type)
     `).catch((error) => {
         analyticsTablePromise = undefined;
         throw error;
@@ -98,10 +104,13 @@ const ensureAnalyticsTable = () => {
 app.post('/api/analytics/click', async (request, response) => {
     const path = typeof request.body?.path === 'string' ? request.body.path.trim() : '';
     const buttonKey = typeof request.body?.buttonKey === 'string' ? request.body.buttonKey.trim() : '';
+    const eventType = typeof request.body?.eventType === 'string' ? request.body.eventType : 'button_click';
+    const allowedEventTypes = new Set(['button_click', 'page_view', 'search_started']);
 
     if (
         !path.startsWith('/') || path.length > 512 || path.includes('?') || path.includes('#')
-        || !buttonKey || buttonKey.length > 200
+        || !allowedEventTypes.has(eventType) || buttonKey.length > 200
+        || (eventType === 'button_click' && !buttonKey)
     ) {
         response.status(400).json({ error: 'Ungültige Klickdaten.' });
         return;
@@ -110,13 +119,186 @@ app.post('/api/analytics/click', async (request, response) => {
     try {
         await ensureAnalyticsTable();
         await pool.query(
-            'INSERT INTO click_events (path, button_key) VALUES ($1, $2)',
-            [path, buttonKey],
+            'INSERT INTO click_events (path, button_key, event_type) VALUES ($1, $2, $3)',
+            [path, buttonKey || null, eventType],
         );
         response.status(204).end();
     } catch (error) {
-        logError('Failed to record click', error, { path, buttonKey });
+        logError('Failed to record analytics event', error, { path, buttonKey, eventType });
         response.status(500).json({ error: 'Klick konnte nicht erfasst werden.' });
+    }
+});
+
+const safeEqual = (left, right) => {
+    const leftBuffer = Buffer.from(left);
+    const rightBuffer = Buffer.from(right);
+
+    return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+};
+
+const requireAnalyticsAdmin = (request, response, next) => {
+    const authorization = request.get('authorization') ?? '';
+    const encodedCredentials = authorization.startsWith('Basic ') ? authorization.slice(6) : '';
+    let credentials = '';
+
+    try {
+        credentials = Buffer.from(encodedCredentials, 'base64').toString('utf8');
+    } catch {
+        credentials = '';
+    }
+
+    const separatorIndex = credentials.indexOf(':');
+    const user = separatorIndex >= 0 ? credentials.slice(0, separatorIndex) : '';
+    const password = separatorIndex >= 0 ? credentials.slice(separatorIndex + 1) : '';
+
+    if (
+        !analyticsAdminUser || !analyticsAdminPassword
+        || !safeEqual(user, analyticsAdminUser)
+        || !safeEqual(password, analyticsAdminPassword)
+    ) {
+        response.set('WWW-Authenticate', 'Basic realm="Analytics"');
+        response.status(401).json({ error: 'Anmeldung erforderlich.' });
+        return;
+    }
+
+    next();
+};
+
+app.get('/api/analytics/summary', requireAnalyticsAdmin, async (request, response) => {
+    const requestedDays = Number(request.query.days ?? 30);
+    const days = Number.isInteger(requestedDays) && requestedDays >= 1 && requestedDays <= 365
+        ? requestedDays
+        : 30;
+
+    try {
+        await ensureAnalyticsTable();
+        const [totalResult, dailyResult, pagesResult, buttonsResult, insightsResult, stationsResult, qualityResult] = await Promise.all([
+            pool.query(`
+                SELECT COUNT(*)::integer AS clicks
+                FROM click_events
+                WHERE clicked_at >= now() - ($1::integer * interval '1 day')
+                  AND event_type = 'button_click'
+            `, [days]),
+            pool.query(`
+                SELECT clicked_at::date::text AS label, COUNT(*)::integer AS clicks
+                FROM click_events
+                WHERE clicked_at >= now() - ($1::integer * interval '1 day')
+                  AND event_type = 'button_click'
+                GROUP BY clicked_at::date
+                ORDER BY clicked_at::date
+            `, [days]),
+            pool.query(`
+                SELECT path AS label, COUNT(*)::integer AS clicks
+                FROM click_events
+                WHERE clicked_at >= now() - ($1::integer * interval '1 day')
+                  AND event_type = 'page_view'
+                  AND path !~ '^/grabstellensuche/[^/]+$'
+                  AND path !~ '^/tour/station/[^/]+$'
+                GROUP BY path
+                ORDER BY clicks DESC, path
+                LIMIT 20
+            `, [days]),
+            pool.query(`
+                SELECT path || ' · ' || button_key AS label, COUNT(*)::integer AS clicks
+                FROM click_events
+                WHERE clicked_at >= now() - ($1::integer * interval '1 day')
+                  AND button_key IS NOT NULL
+                  AND event_type = 'button_click'
+                GROUP BY path, button_key
+                ORDER BY clicks DESC, path, button_key
+                LIMIT 30
+            `, [days]),
+            pool.query(`
+                SELECT
+                    COUNT(*) FILTER (WHERE clicked_at >= now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/')::integer AS home_views,
+                    COUNT(*) FILTER (WHERE clicked_at < now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/')::integer AS previous_home_views,
+                    COUNT(*) FILTER (WHERE clicked_at >= now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/grabstellensuche')::integer AS grave_search_views,
+                    COUNT(*) FILTER (WHERE clicked_at < now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/grabstellensuche')::integer AS previous_grave_search_views,
+                    COUNT(*) FILTER (WHERE clicked_at >= now() - ($1::integer * interval '1 day') AND event_type = 'search_started' AND path = '/grabstellensuche')::integer AS searches_started,
+                    COUNT(*) FILTER (WHERE clicked_at < now() - ($1::integer * interval '1 day') AND event_type = 'search_started' AND path = '/grabstellensuche')::integer AS previous_searches_started,
+                    COUNT(*) FILTER (WHERE clicked_at >= now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path ~ '^/grabstellensuche/[^/]+$')::integer AS grave_detail_views,
+                    COUNT(*) FILTER (WHERE clicked_at < now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path ~ '^/grabstellensuche/[^/]+$')::integer AS previous_grave_detail_views,
+                    COUNT(*) FILTER (
+                        WHERE clicked_at >= now() - ($1::integer * interval '1 day') AND event_type = 'button_click' AND path = '/'
+                          AND button_key = 'Friedhofstour Erinnerungskultur'
+                    )::integer AS tour_clicks,
+                    COUNT(*) FILTER (
+                        WHERE clicked_at < now() - ($1::integer * interval '1 day') AND event_type = 'button_click' AND path = '/'
+                          AND button_key = 'Friedhofstour Erinnerungskultur'
+                    )::integer AS previous_tour_clicks,
+                    COUNT(*) FILTER (WHERE clicked_at >= now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/tour/home')::integer AS onboarding_views,
+                    COUNT(*) FILTER (WHERE clicked_at < now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/tour/home')::integer AS previous_onboarding_views,
+                    COUNT(*) FILTER (WHERE clicked_at >= now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/tour/map')::integer AS map_views,
+                    COUNT(*) FILTER (WHERE clicked_at < now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/tour/map')::integer AS previous_map_views
+                FROM click_events
+                WHERE clicked_at >= now() - ($1::integer * interval '2 days')
+            `, [days]),
+            pool.query(`
+                SELECT regexp_replace(path, '^/tour/station/', 'Station ') AS label,
+                       COUNT(*)::integer AS clicks
+                FROM click_events
+                WHERE clicked_at >= now() - ($1::integer * interval '1 day')
+                  AND event_type = 'page_view'
+                  AND path ~ '^/tour/station/[^/]+$'
+                GROUP BY path
+                ORDER BY clicks DESC, path
+            `, [days]),
+            pool.query(`
+                SELECT
+                    MAX(clicked_at) AS last_event_at,
+                    COUNT(*) FILTER (
+                        WHERE clicked_at >= now() - ($1::integer * interval '1 day')
+                          AND event_type = 'button_click'
+                          AND (button_key IS NULL OR button_key IN ('button', 'div'))
+                    )::integer AS ambiguous_events,
+                    COUNT(*) FILTER (
+                        WHERE clicked_at >= now() - ($1::integer * interval '1 day')
+                          AND event_type = 'button_click' AND button_key IS NULL
+                    )::integer AS legacy_events
+                FROM click_events
+            `, [days]),
+        ]);
+
+        const insights = insightsResult.rows[0];
+        const tourClicks = insights?.tour_clicks ?? 0;
+        const mapViews = insights?.map_views ?? 0;
+        const toMetric = (name) => {
+            const value = insights?.[name] ?? 0;
+            const previous = insights?.[`previous_${name}`] ?? 0;
+
+            return {
+                value,
+                previous,
+                changePercent: previous > 0 ? Math.round(((value - previous) / previous) * 100) : null,
+            };
+        };
+
+        response.json({
+            days,
+            totalClicks: totalResult.rows[0]?.clicks ?? 0,
+            daily: dailyResult.rows,
+            pages: pagesResult.rows,
+            buttons: buttonsResult.rows,
+            insights: {
+                homeViews: toMetric('home_views'),
+                graveSearchViews: toMetric('grave_search_views'),
+                searchesStarted: toMetric('searches_started'),
+                graveDetailViews: toMetric('grave_detail_views'),
+                tourClicks: toMetric('tour_clicks'),
+                onboardingViews: toMetric('onboarding_views'),
+                mapViews: toMetric('map_views'),
+                onboardingCompletionRate: tourClicks > 0 ? Math.round((mapViews / tourClicks) * 100) : 0,
+            },
+            stations: stationsResult.rows,
+            quality: {
+                lastEventAt: qualityResult.rows[0]?.last_event_at ?? null,
+                ambiguousEvents: qualityResult.rows[0]?.ambiguous_events ?? 0,
+                legacyEvents: qualityResult.rows[0]?.legacy_events ?? 0,
+            },
+        });
+    } catch (error) {
+        logError('Failed to load analytics summary', error, { days });
+        response.status(500).json({ error: 'Statistik konnte nicht geladen werden.' });
     }
 });
 
