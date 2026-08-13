@@ -3,7 +3,8 @@ import pg from 'pg';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { timingSafeEqual } from 'node:crypto';
+import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
 
 const { Pool } = pg;
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -17,6 +18,7 @@ const analyticsAdminPassword = process.env.ANALYTICS_ADMIN_PASSWORD ?? '';
 const pool = new Pool({ connectionString: databaseUrl });
 const startedAt = new Date();
 let analyticsTablePromise;
+const scrypt = promisify(scryptCallback);
 const cemeteries = JSON.parse(
     await readFile(resolve(__dirname, '../src/data/cemeteries.json'), 'utf8'),
 );
@@ -92,7 +94,13 @@ const ensureAnalyticsTable = () => {
         CREATE INDEX IF NOT EXISTS click_events_clicked_at_idx ON click_events (clicked_at);
         CREATE INDEX IF NOT EXISTS click_events_path_idx ON click_events (path);
         CREATE INDEX IF NOT EXISTS click_events_button_key_idx ON click_events (button_key);
-        CREATE INDEX IF NOT EXISTS click_events_event_type_idx ON click_events (event_type)
+        CREATE INDEX IF NOT EXISTS click_events_event_type_idx ON click_events (event_type);
+        CREATE TABLE IF NOT EXISTS analytics_users (
+            id bigserial PRIMARY KEY,
+            username text NOT NULL UNIQUE,
+            password_hash text NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now()
+        )
     `).catch((error) => {
         analyticsTablePromise = undefined;
         throw error;
@@ -136,7 +144,21 @@ const safeEqual = (left, right) => {
     return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 };
 
-const requireAnalyticsAdmin = (request, response, next) => {
+const hashPassword = async (password) => {
+    const salt = randomBytes(16).toString('hex');
+    const derivedKey = await scrypt(password, salt, 64);
+    return `${salt}:${derivedKey.toString('hex')}`;
+};
+
+const verifyPassword = async (password, storedHash) => {
+    const [salt, expectedHex] = String(storedHash).split(':');
+    if (!salt || !expectedHex) return false;
+    const actual = await scrypt(password, salt, 64);
+    const expected = Buffer.from(expectedHex, 'hex');
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+};
+
+const requireAnalyticsAdmin = async (request, response, next) => {
     const authorization = request.get('authorization') ?? '';
     const encodedCredentials = authorization.startsWith('Basic ') ? authorization.slice(6) : '';
     let credentials = '';
@@ -151,18 +173,92 @@ const requireAnalyticsAdmin = (request, response, next) => {
     const user = separatorIndex >= 0 ? credentials.slice(0, separatorIndex) : '';
     const password = separatorIndex >= 0 ? credentials.slice(separatorIndex + 1) : '';
 
-    if (
-        !analyticsAdminUser || !analyticsAdminPassword
-        || !safeEqual(user, analyticsAdminUser)
-        || !safeEqual(password, analyticsAdminPassword)
-    ) {
+    const isBootstrapAdmin = Boolean(
+        analyticsAdminUser && analyticsAdminPassword
+        && safeEqual(user, analyticsAdminUser)
+        && safeEqual(password, analyticsAdminPassword),
+    );
+    let isDatabaseUser = false;
+
+    if (!isBootstrapAdmin && user && password) {
+        try {
+            await ensureAnalyticsTable();
+            const result = await pool.query(
+                'SELECT password_hash FROM analytics_users WHERE username = $1',
+                [user],
+            );
+            isDatabaseUser = result.rowCount === 1
+                && await verifyPassword(password, result.rows[0].password_hash);
+        } catch (error) {
+            logError('Failed to authenticate analytics user', error, { user });
+        }
+    }
+
+    if (!isBootstrapAdmin && !isDatabaseUser) {
         response.set('WWW-Authenticate', 'Basic realm="Analytics"');
         response.status(401).json({ error: 'Anmeldung erforderlich.' });
         return;
     }
 
+    request.analyticsUser = user;
+    request.analyticsCanManageUsers = isBootstrapAdmin;
     next();
 };
+
+const requireAnalyticsUserManager = (request, response, next) => {
+    if (!request.analyticsCanManageUsers) {
+        response.status(403).json({ error: 'Nur das Hauptkonto darf Profile verwalten.' });
+        return;
+    }
+    next();
+};
+
+app.get('/api/analytics/users', requireAnalyticsAdmin, requireAnalyticsUserManager, async (_request, response) => {
+    await ensureAnalyticsTable();
+    const result = await pool.query('SELECT id, username, created_at FROM analytics_users ORDER BY username');
+    response.json({ users: result.rows, bootstrapUser: analyticsAdminUser });
+});
+
+app.post('/api/analytics/users', requireAnalyticsAdmin, requireAnalyticsUserManager, async (request, response) => {
+    const username = typeof request.body?.username === 'string' ? request.body.username.trim() : '';
+    const password = typeof request.body?.password === 'string' ? request.body.password : '';
+
+    if (!/^[a-zA-Z0-9._-]{3,64}$/.test(username) || password.length < 12 || password.length > 256) {
+        response.status(400).json({ error: 'Benutzername ungültig oder Passwort kürzer als 12 Zeichen.' });
+        return;
+    }
+    if (safeEqual(username, analyticsAdminUser)) {
+        response.status(409).json({ error: 'Dieser Benutzername ist bereits vergeben.' });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        const passwordHash = await hashPassword(password);
+        const result = await pool.query(
+            'INSERT INTO analytics_users (username, password_hash) VALUES ($1, $2) RETURNING id, username, created_at',
+            [username, passwordHash],
+        );
+        response.status(201).json(result.rows[0]);
+    } catch (error) {
+        if (error.code === '23505') {
+            response.status(409).json({ error: 'Dieser Benutzername ist bereits vergeben.' });
+            return;
+        }
+        logError('Failed to create analytics user', error, { username });
+        response.status(500).json({ error: 'Profil konnte nicht angelegt werden.' });
+    }
+});
+
+app.delete('/api/analytics/users/:id', requireAnalyticsAdmin, requireAnalyticsUserManager, async (request, response) => {
+    if (!/^\d+$/.test(request.params.id)) {
+        response.status(400).json({ error: 'Ungültige Profil-ID.' });
+        return;
+    }
+    await ensureAnalyticsTable();
+    const result = await pool.query('DELETE FROM analytics_users WHERE id = $1', [request.params.id]);
+    response.status(result.rowCount ? 204 : 404).end();
+});
 
 app.get('/api/analytics/summary', requireAnalyticsAdmin, async (request, response) => {
     const requestedDays = Number(request.query.days ?? 30);
@@ -241,7 +337,7 @@ app.get('/api/analytics/summary', requireAnalyticsAdmin, async (request, respons
                   AND event_type = 'page_view'
                   AND path ~ '^/tour/station/[^/]+$'
                 GROUP BY path
-                ORDER BY clicks DESC, path
+                ORDER BY substring(path FROM '^/tour/station/(\\d+)$')::integer ASC NULLS LAST, path
             `, [days]),
             pool.query(`
                 SELECT
@@ -295,6 +391,7 @@ app.get('/api/analytics/summary', requireAnalyticsAdmin, async (request, respons
                 ambiguousEvents: qualityResult.rows[0]?.ambiguous_events ?? 0,
                 legacyEvents: qualityResult.rows[0]?.legacy_events ?? 0,
             },
+            canManageUsers: request.analyticsCanManageUsers,
         });
     } catch (error) {
         logError('Failed to load analytics summary', error, { days });

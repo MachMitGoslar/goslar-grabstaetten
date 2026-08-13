@@ -1,5 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Seo } from '../components/Seo.tsx';
+import { analyticsApiBaseUrl as apiBaseUrl, analyticsCredentialsKey as credentialsKey } from '../analytics/adminAuth.ts';
 import './Analytics.css';
 
 type Metric = { label: string; clicks: number };
@@ -22,10 +24,8 @@ type AnalyticsSummary = {
         onboardingCompletionRate: number;
     };
     quality: { lastEventAt: string | null; ambiguousEvents: number; legacyEvents: number };
+    canManageUsers: boolean;
 };
-
-const apiBaseUrl = import.meta.env.VITE_API_URL ?? '';
-const credentialsKey = 'analytics-admin-credentials';
 
 const encodeCredentials = (user: string, password: string) =>
     btoa(String.fromCharCode(...new TextEncoder().encode(`${user}:${password}`)));
@@ -137,9 +137,12 @@ export const AnalyticsPage = () => {
             <Seo title="Nutzungsstatistik" description="Geschützte Nutzungsstatistik" path="/admin/statistik" />
             <header className="analytics-header">
                 <div><p>Administration</p><h1>Nutzungsstatistik</h1></div>
-                {credentials && <button type="button" onClick={() => {
+                {credentials && <div className="analytics-header-actions">
+                    {summary?.canManageUsers && <Link to="/admin/profile">Profile</Link>}
+                    <button type="button" onClick={() => {
                     sessionStorage.removeItem(credentialsKey); setCredentials(''); setSummary(null);
-                }}>Abmelden</button>}
+                    }}>Abmelden</button>
+                </div>}
             </header>
 
             {!credentials ? (
