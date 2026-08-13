@@ -34,6 +34,10 @@ services:
       API_HOST: 0.0.0.0
       API_PORT: 3001
       DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-grave}:${POSTGRES_PASSWORD:-grave}@${POSTGRES_HOST:-db}:5432/${POSTGRES_DB:-gravedb}}
+
+
+      ANALYTICS_ADMIN_USER: ${ANALYTICS_ADMIN_USER:?ANALYTICS_ADMIN_USER must be set}
+      ANALYTICS_ADMIN_PASSWORD: ${ANALYTICS_ADMIN_PASSWORD:?ANALYTICS_ADMIN_PASSWORD must be set}
     depends_on:
       db:
         condition: service_healthy
