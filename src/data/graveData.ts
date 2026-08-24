@@ -27,7 +27,20 @@ export type GraveRecord = {
     cemeteryLatitude?: number;
     cemeteryLongitude?: number;
     navigationUrl: string;
+    graveTexts: GraveText[];
     searchText: string;
+};
+
+export type GraveText = {
+    id: string;
+    graveId: string;
+    text: string;
+    role: string;
+    date: string;
+    createdBy: string;
+    updatedBy: string;
+    createdAt: string;
+    updatedAt: string;
 };
 
 export type GravesPage = {
@@ -68,6 +81,7 @@ const getCemeteryImage = (imagePath: string) => {
 const enrichGrave = (grave: GraveRecord): GraveRecord => ({
     ...grave,
     cemeteryImage: grave.cemeteryImage || getCemeteryImage(grave.cemeteryImagePath),
+    graveTexts: grave.graveTexts ?? [],
 });
 
 const fetchJson = async <Data>(path: string, signal?: AbortSignal): Promise<Data> => {

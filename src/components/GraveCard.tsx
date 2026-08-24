@@ -6,6 +6,7 @@ type GraveCardProps = {
     birthDate: string;
     deathDate: string;
     cemetery: string;
+    selected?: boolean;
     onClick?: () => void;
 };
 
@@ -15,13 +16,15 @@ export const GraveCard = ({
                               birthDate,
                               deathDate,
                               cemetery,
+                              selected = false,
                               onClick,
                           }: GraveCardProps) => {
     return (
         <button
             type="button"
             onClick={onClick}
-            className="grave-card"
+            className={`grave-card${selected ? ' grave-card--selected' : ''}`}
+            aria-pressed={selected}
         >
             <h3 className="grave-card__title">
                 {lastName}, {firstName}

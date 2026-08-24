@@ -6,11 +6,20 @@ ENV NODE_ENV=production
 ENV API_HOST=0.0.0.0
 ENV API_PORT=3001
 
+RUN apk add --no-cache python3 py3-pip \
+  && python3 -m venv /opt/grave-import
+
 COPY package*.json ./
 RUN npm ci --omit=dev
 
+COPY submodules/grave-db/requirements.txt ./grave-db/requirements.txt
+RUN /opt/grave-import/bin/pip install --no-cache-dir -r ./grave-db/requirements.txt
+
 COPY server ./server
 COPY src/data/cemeteries.json ./src/data/cemeteries.json
+COPY submodules/grave-db/scripts ./grave-db/scripts
+COPY submodules/grave-db/sql ./grave-db/sql
+COPY submodules/grave-db/data ./grave-db/data
 
 EXPOSE 3001
 

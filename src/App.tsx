@@ -13,6 +13,9 @@ const GraveDetailPage = lazy(() =>
 const AnalyticsPage = lazy(() =>
   import('./pages/Analytics.tsx').then((module) => ({ default: module.AnalyticsPage })),
 )
+const AdminPage = lazy(() =>
+  import('./pages/Admin.tsx').then((module) => ({ default: module.AdminPage })),
+)
 const AnalyticsProfilesPage = lazy(() =>
   import('./pages/AnalyticsProfiles.tsx').then((module) => ({ default: module.AnalyticsProfilesPage })),
 )
@@ -26,6 +29,7 @@ export const App = () => (
         <Route path="/grabstellensuche" element={<GraveSearchPage />} />
         <Route path="/grabstellensuche/:graveId" element={<GraveDetailPage />} />
         <Route path="/geotour" element={<GeoTourPage />} />
+        <Route path="/admin" element={<AdminPage />} />
         <Route path="/admin/statistik" element={<AnalyticsPage />} />
         <Route path="/admin/profile" element={<AnalyticsProfilesPage />} />
       </Routes>

@@ -1,1 +1,1 @@
-export const importantRoutes = ['/', '/grabstellensuche', '/geotour']
+export const importantRoutes = ['/', '/grabstellensuche', '/geotour', '/admin']

@@ -1,8 +1,18 @@
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? '';
 let lastPageView = { path: '', recordedAt: 0 };
 let lastSearchStartedAt = 0;
+const visitorIdKey = 'analytics-visitor-id';
 
 export type AnalyticsEventType = 'button_click' | 'page_view' | 'search_started';
+
+const getVisitorId = () => {
+    let visitorId = localStorage.getItem(visitorIdKey);
+    if (!visitorId) {
+        visitorId = crypto.randomUUID();
+        localStorage.setItem(visitorIdKey, visitorId);
+    }
+    return visitorId;
+};
 
 export const recordAnalyticsEvent = (eventType: AnalyticsEventType, buttonKey?: string) => {
     if (window.location.pathname.startsWith('/admin/')) return;
@@ -23,6 +33,7 @@ export const recordAnalyticsEvent = (eventType: AnalyticsEventType, buttonKey?: 
         path: window.location.pathname,
         eventType,
         buttonKey,
+        visitorId: getVisitorId(),
     });
     const endpoint = `${apiBaseUrl}/api/analytics/click`;
 

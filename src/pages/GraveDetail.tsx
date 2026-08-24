@@ -123,6 +123,20 @@ export const GraveDetailPage = () => {
                     ))}
                 </div>
 
+                {grave.graveTexts.length > 0 && (
+                    <div className="grave-detail-custom-texts" aria-label="Zusätzliche Grabtexte">
+                        {grave.graveTexts.map((graveText) => (
+                            <article key={graveText.id} className="grave-detail-custom-text">
+                                <p>{graveText.text}</p>
+                                <footer>
+                                    <span>{graveText.role}</span>
+                                    <time dateTime={graveText.date}>{formatDisplayDate(graveText.date)}</time>
+                                </footer>
+                            </article>
+                        ))}
+                    </div>
+                )}
+
                 <h2 className="grave-detail-map-heading">Karte</h2>
 
                 <CemeteryMap
@@ -349,6 +363,14 @@ const formatDateForSentence = (date: string) => {
     }
 
     return `am ${date}`;
+};
+
+const formatDisplayDate = (date: string) => {
+    if (!date) {
+        return '';
+    }
+
+    return new Intl.DateTimeFormat('de-DE').format(new Date(`${date}T00:00:00`));
 };
 
 type BackButtonProps = {

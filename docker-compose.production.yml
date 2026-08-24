@@ -48,6 +48,7 @@ services:
   db:
     image: ${GHCR_IMAGE_PREFIX:-ghcr.io/machmitgoslar/goslar-grabstaetten}-db:${IMAGE_TAG:-latest}
     platform: linux/amd64
+    shm_size: 256mb
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-gravedb}
       POSTGRES_USER: ${POSTGRES_USER:-grave}

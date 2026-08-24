@@ -4,26 +4,23 @@ import { Seo } from '../components/Seo.tsx';
 import { analyticsApiBaseUrl as apiBaseUrl, analyticsCredentialsKey as credentialsKey } from '../analytics/adminAuth.ts';
 import './Analytics.css';
 
-type Metric = { label: string; clicks: number };
-type ComparisonMetric = { value: number; previous: number; changePercent: number | null };
+type Metric = { label: string; value: number };
+type DailyVisitorMetric = { label: string; visitors: number; legacyEvents: number };
+type GraveDetailMetric = { label: string; views: number };
 type AnalyticsSummary = {
     days: number;
-    totalClicks: number;
-    daily: Metric[];
-    pages: Metric[];
-    buttons: Metric[];
-    stations: Metric[];
-    insights: {
-        homeViews: ComparisonMetric;
-        graveSearchViews: ComparisonMetric;
-        searchesStarted: ComparisonMetric;
-        graveDetailViews: ComparisonMetric;
-        tourClicks: ComparisonMetric;
-        onboardingViews: ComparisonMetric;
-        mapViews: ComparisonMetric;
-        onboardingCompletionRate: number;
+    overview: {
+        visitors: number;
+        graveDetailViews: number;
+        stationViews: number;
     };
-    quality: { lastEventAt: string | null; ambiguousEvents: number; legacyEvents: number };
+    dailyVisitors: DailyVisitorMetric[];
+    graveDetails: {
+        daily: GraveDetailMetric[];
+        items: GraveDetailMetric[];
+    };
+    stations: GraveDetailMetric[];
+    quality: { lastEventAt: string | null; legacyEvents: number };
     canManageUsers: boolean;
 };
 
@@ -31,17 +28,17 @@ const encodeCredentials = (user: string, password: string) =>
     btoa(String.fromCharCode(...new TextEncoder().encode(`${user}:${password}`)));
 
 const MetricBars = ({ items }: { items: Metric[] }) => {
-    const maximum = Math.max(...items.map((item) => item.clicks), 1);
+    const maximum = Math.max(...items.map((item) => item.value), 1);
 
     return items.length ? (
         <div className="analytics-bars">
             {items.map((item) => (
                 <div className="analytics-bar" key={item.label}>
                     <div className="analytics-bar__label">
-                        <span>{item.label}</span><strong>{item.clicks}</strong>
+                        <span>{item.label}</span><strong>{item.value}</strong>
                     </div>
                     <div className="analytics-bar__track">
-                        <span style={{ width: `${(item.clicks / maximum) * 100}%` }} />
+                        <span style={{ width: `${(item.value / maximum) * 100}%` }} />
                     </div>
                 </div>
             ))}
@@ -49,40 +46,18 @@ const MetricBars = ({ items }: { items: Metric[] }) => {
     ) : <p className="analytics-empty">Für diesen Zeitraum liegen keine Daten vor.</p>;
 };
 
-const KpiCard = ({ metric, label, definition }: {
-    metric: ComparisonMetric;
+const KpiCard = ({ value, label, definition }: {
+    value: number;
     label: string;
     definition: string;
 }) => (
     <article title={definition}>
-        <strong>{metric.value}</strong>
+        <strong>{value}</strong>
         <span>{label}</span>
-        <small className={metric.changePercent !== null && metric.changePercent < 0 ? 'is-negative' : ''}>
-            {metric.changePercent === null
-                ? 'Kein Vergleichswert'
-                : `${metric.changePercent >= 0 ? '+' : ''}${metric.changePercent} % zum vorherigen Zeitraum`}
-        </small>
     </article>
 );
 
-const Funnel = ({ title, stages }: { title: string; stages: Array<{ label: string; value: number }> }) => {
-    const maximum = Math.max(stages[0]?.value ?? 0, 1);
-
-    return (
-        <section className="analytics-funnel">
-            <h2>{title}</h2>
-            {stages.map((stage, index) => {
-                const previous = stages[index - 1]?.value;
-                const conversion = previous ? Math.round((stage.value / previous) * 100) : null;
-                return <div className="analytics-funnel__step" key={stage.label}>
-                    <div><span>{stage.label}</span><strong>{stage.value}</strong></div>
-                    <div className="analytics-funnel__track"><span style={{ width: `${(stage.value / maximum) * 100}%` }} /></div>
-                    {conversion !== null && <small>{conversion} % der vorherigen Stufe</small>}
-                </div>;
-            })}
-        </section>
-    );
-};
+const formatDateLabel = (label: string) => new Date(label).toLocaleDateString('de-DE');
 
 export const AnalyticsPage = () => {
     const [credentials, setCredentials] = useState(() => sessionStorage.getItem(credentialsKey) ?? '');
@@ -138,6 +113,7 @@ export const AnalyticsPage = () => {
             <header className="analytics-header">
                 <div><p>Administration</p><h1>Nutzungsstatistik</h1></div>
                 {credentials && <div className="analytics-header-actions">
+                    <Link to="/admin">Admin-Plattform</Link>
                     {summary?.canManageUsers && <Link to="/admin/profile">Profile</Link>}
                     <button type="button" onClick={() => {
                     sessionStorage.removeItem(credentialsKey); setCredentials(''); setSummary(null);
@@ -162,47 +138,50 @@ export const AnalyticsPage = () => {
                     </div>
                     {loading && <p>Lade Statistik …</p>}
                     {summary && !loading && <div className="analytics-dashboard">
-                        <section className="analytics-total"><span>Klicks in {summary.days} Tagen</span><strong>{summary.totalClicks}</strong></section>
                         <section className="analytics-insights analytics-wide">
-                            <h2>Nutzung im Überblick</h2>
+                            <h2>Übersicht der letzten {summary.days} Tage</h2>
                             <div className="analytics-kpis">
-                                <KpiCard metric={summary.insights.homeViews} label="Aufrufe der Startseite" definition="Aufruf der Route /." />
-                                <KpiCard metric={summary.insights.graveSearchViews} label="Grabstellensuche geöffnet" definition="Aufruf der Übersichtsseite /grabstellensuche." />
-                                <KpiCard metric={summary.insights.searchesStarted} label="Aktive Suchen" definition="API-Suche mit mindestens einem Suchbegriff oder Filter; Suchinhalte werden nicht gespeichert." />
-                                <KpiCard metric={summary.insights.graveDetailViews} label="Grabdetails geöffnet" definition="Aufruf einer Grabdetailseite nach Auswahl eines Ergebnisses." />
-                                <KpiCard metric={summary.insights.tourClicks} label="Tour gewählt" definition="Klick auf Friedhofstour Erinnerungskultur auf der Startseite." />
-                                <KpiCard metric={summary.insights.mapViews} label="Tourkarte erreicht" definition="Aufruf der Karte nach dem Tour-Onboarding." />
+                                <KpiCard value={summary.overview.visitors} label="Besucher" definition="Eindeutige anonyme Besucherkennungen mit mindestens einem Seitenaufruf im Zeitraum." />
+                                <KpiCard value={summary.overview.graveDetailViews} label="Geöffnete Grabstellendetails" definition="Aufrufe von Grabdetailseiten unter /grabstellensuche/:id." />
+                                <KpiCard value={summary.overview.stationViews} label="Geöffnete Tour-Stationen" definition="Aufrufe von Tour-Stationen unter /tour/station/:id." />
                             </div>
                         </section>
-                        <Funnel title="Funnel Grabstellensuche" stages={[
-                            { label: 'Grabstellensuche geöffnet', value: summary.insights.graveSearchViews.value },
-                            { label: 'Aktive Suche gestartet', value: summary.insights.searchesStarted.value },
-                            { label: 'Grabdetail geöffnet', value: summary.insights.graveDetailViews.value },
-                        ]} />
-                        <Funnel title="Funnel Friedhofstour" stages={[
-                            { label: 'Tour gewählt', value: summary.insights.tourClicks.value },
-                            { label: 'Onboarding geöffnet', value: summary.insights.onboardingViews.value },
-                            { label: 'Karte erreicht', value: summary.insights.mapViews.value },
-                        ]} />
-                        <p className="analytics-funnel-note analytics-wide">
-                            Die Funnels vergleichen aggregierte Ereignisse. Da keine Nutzer- oder Session-ID gespeichert wird,
-                            stellen die Prozentwerte keine Quote eindeutig identifizierter Personen dar.
-                        </p>
                         <section className="analytics-wide">
-                            <h2>Geöffnete Tour-Stationen</h2>
-                            <MetricBars items={summary.stations} />
+                            <h2>Besucher pro Tag</h2>
+                            <MetricBars items={summary.dailyVisitors.map((item) => ({
+                                label: formatDateLabel(item.label),
+                                value: item.visitors,
+                            }))} />
+                            {summary.quality.legacyEvents > 0 && (
+                                <p className="analytics-funnel-note">
+                                    Hinweis: {summary.quality.legacyEvents} ältere Seitenaufrufe enthalten noch keine Besucherkennung und werden nicht als eindeutige Besucher gezählt.
+                                </p>
+                            )}
                         </section>
-                        <section><h2>Klicks pro Tag</h2><MetricBars items={summary.daily} /></section>
-                        <section><h2>Seitenaufrufe</h2><MetricBars items={summary.pages} /></section>
-                        <details className="analytics-details analytics-wide">
-                            <summary>Technische Detaildaten anzeigen</summary>
-                            <h2>Weitere Button-Klicks</h2><MetricBars items={summary.buttons} />
-                            <div className="analytics-quality">
-                                <span>Letztes Ereignis: {summary.quality.lastEventAt ? new Date(summary.quality.lastEventAt).toLocaleString('de-DE') : '–'}</span>
-                                <span>Uneindeutige Kennungen: {summary.quality.ambiguousEvents}</span>
-                                <span>Alte Ereignisse ohne Buttonkennung: {summary.quality.legacyEvents}</span>
-                            </div>
-                        </details>
+                        <section>
+                            <h2>Grabstellendetails pro Tag</h2>
+                            <MetricBars items={summary.graveDetails.daily.map((item) => ({
+                                label: formatDateLabel(item.label),
+                                value: item.views,
+                            }))} />
+                        </section>
+                        <section>
+                            <h2>Häufig geöffnete Grabstellendetails</h2>
+                            <MetricBars items={summary.graveDetails.items.map((item) => ({
+                                label: item.label,
+                                value: item.views,
+                            }))} />
+                        </section>
+                        <section className="analytics-wide">
+                            <h2>Öffnungen der jeweiligen Tour-Stationen</h2>
+                            <MetricBars items={summary.stations.map((item) => ({
+                                label: item.label,
+                                value: item.views,
+                            }))} />
+                        </section>
+                        <p className="analytics-quality analytics-wide">
+                            Letztes Ereignis: {summary.quality.lastEventAt ? new Date(summary.quality.lastEventAt).toLocaleString('de-DE') : '–'}
+                        </p>
                     </div>}
                 </>
             )}
