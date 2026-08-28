@@ -123,6 +123,20 @@ export const GraveDetailPage = () => {
                     ))}
                 </div>
 
+                {grave.graveTexts.length > 0 && (
+                    <div className="grave-detail-custom-texts" aria-label="Zusätzliche Grabtexte">
+                        {grave.graveTexts.map((graveText) => (
+                            <article key={graveText.id} className="grave-detail-custom-text">
+                                <p>{graveText.text}</p>
+                                <footer>
+                                    <span>{graveText.role}</span>
+                                    <time dateTime={graveText.date}>{formatDisplayDate(graveText.date)}</time>
+                                </footer>
+                            </article>
+                        ))}
+                    </div>
+                )}
+
                 <h2 className="grave-detail-map-heading">Karte</h2>
 
                 <CemeteryMap
@@ -259,15 +273,14 @@ const CemeteryMap = ({ latitude, longitude, name, address }: CemeteryMapProps) =
             scrollWheelZoom: false,
         }).setView([latitude, longitude], 15);
 
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
-            subdomains: 'abcd',
         }).addTo(map);
 
         L.control.attribution({
             position: 'bottomright',
             prefix: false,
-        }).addAttribution('© OpenStreetMap © CARTO').addTo(map);
+        }).addAttribution('© OpenStreetMap contributors').addTo(map);
 
         const marker = L.marker([latitude, longitude], {
             title: name,
@@ -349,6 +362,14 @@ const formatDateForSentence = (date: string) => {
     }
 
     return `am ${date}`;
+};
+
+const formatDisplayDate = (date: string) => {
+    if (!date) {
+        return '';
+    }
+
+    return new Intl.DateTimeFormat('de-DE').format(new Date(`${date}T00:00:00`));
 };
 
 type BackButtonProps = {

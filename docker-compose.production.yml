@@ -33,25 +33,62 @@ services:
     environment:
       API_HOST: 0.0.0.0
       API_PORT: 3001
-      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-grave}:${POSTGRES_PASSWORD:-grave}@${POSTGRES_HOST:-db}:5432/${POSTGRES_DB:-gravedb}}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-grave}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@${POSTGRES_HOST:-db}:5432/${POSTGRES_DB:-gravedb}}
 
 
       ANALYTICS_ADMIN_USER: ${ANALYTICS_ADMIN_USER:?ANALYTICS_ADMIN_USER must be set}
       ANALYTICS_ADMIN_PASSWORD: ${ANALYTICS_ADMIN_PASSWORD:?ANALYTICS_ADMIN_PASSWORD must be set}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL must be set}
+      FORCE_SECURE_COOKIES: ${FORCE_SECURE_COOKIES:-true}
+      SMTP_HOST: ${SMTP_HOST:-mailserver}
+      SMTP_PORT: ${SMTP_PORT:-25}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:?SMTP_FROM must be set}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
     depends_on:
       db:
         condition: service_healthy
+      mailserver:
+        condition: service_started
     networks:
       - friedhof_internal
     restart: unless-stopped
 
+  mailserver:
+    image: ghcr.io/docker-mailserver/docker-mailserver:latest
+    container_name: ${MAILSERVER_CONTAINER_NAME:-friedhof-mailserver}
+    hostname: ${MAILSERVER_HOSTNAME:?MAILSERVER_HOSTNAME must be set}
+    domainname: ${MAILSERVER_DOMAINNAME:?MAILSERVER_DOMAINNAME must be set}
+    ports:
+      - "${MAILSERVER_SMTP_PORT:-25}:25"
+      - "${MAILSERVER_SUBMISSION_PORT:-587}:587"
+      - "${MAILSERVER_IMAPS_PORT:-993}:993"
+    volumes:
+      - ./docker-data/dms/mail-data/:/var/mail/
+      - ./docker-data/dms/mail-state/:/var/mail-state/
+      - ./docker-data/dms/mail-logs/:/var/log/mail/
+      - ./docker-data/dms/config/:/tmp/docker-mailserver/
+      - ${LETSENCRYPT_PATH:-/etc/letsencrypt}:/etc/letsencrypt:ro
+    environment:
+      ENABLE_SPAMASSASSIN: ${MAILSERVER_ENABLE_SPAMASSASSIN:-0}
+      ENABLE_CLAMAV: ${MAILSERVER_ENABLE_CLAMAV:-0}
+      ENABLE_FAIL2BAN: ${MAILSERVER_ENABLE_FAIL2BAN:-1}
+      LOG_LEVEL: ${MAILSERVER_LOG_LEVEL:-info}
+      PERMIT_DOCKER: ${MAILSERVER_PERMIT_DOCKER:-network}
+      SSL_TYPE: ${MAILSERVER_SSL_TYPE:-letsencrypt}
+    networks:
+      - friedhof_internal
+    restart: always
+
   db:
     image: ${GHCR_IMAGE_PREFIX:-ghcr.io/machmitgoslar/goslar-grabstaetten}-db:${IMAGE_TAG:-latest}
     platform: linux/amd64
+    shm_size: 256mb
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-gravedb}
       POSTGRES_USER: ${POSTGRES_USER:-grave}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-grave}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -71,7 +108,7 @@ services:
     profiles:
       - import
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-grave}:${POSTGRES_PASSWORD:-grave}@${POSTGRES_HOST:-db}:5432/${POSTGRES_DB:-gravedb}}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-grave}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@${POSTGRES_HOST:-db}:5432/${POSTGRES_DB:-gravedb}}
     depends_on:
       db:
         condition: service_healthy

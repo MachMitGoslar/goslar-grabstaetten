@@ -16,6 +16,13 @@
     outline-offset: 4px;
 }
 
+.grave-card--selected {
+    box-shadow:
+        0 0 0 3px color-mix(in srgb, var(--color-primary) 45%, transparent),
+        0 4px 8px rgba(0, 0, 0, 0.04),
+        0 2px 4px rgba(0, 0, 0, 0.02);
+}
+
 .grave-card__title {
     color: var(--color-text);
     font-size: 18px;

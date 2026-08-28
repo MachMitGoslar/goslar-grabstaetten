@@ -3,17 +3,36 @@ import pg from 'pg';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomInt, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import net from 'node:net';
+import tls from 'node:tls';
 
 const { Pool } = pg;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
+app.set('trust proxy', true);
 const port = Number(process.env.API_PORT ?? 3001);
 const host = process.env.API_HOST ?? '127.0.0.1';
 const databaseUrl = process.env.DATABASE_URL ?? 'postgresql://grave:grave@db:5432/gravedb';
 const analyticsAdminUser = process.env.ANALYTICS_ADMIN_USER ?? '';
 const analyticsAdminPassword = process.env.ANALYTICS_ADMIN_PASSWORD ?? '';
+const smtpHost = process.env.SMTP_HOST ?? '';
+const smtpPort = Number(process.env.SMTP_PORT ?? 587);
+const smtpUser = process.env.SMTP_USER ?? '';
+const smtpPassword = process.env.SMTP_PASSWORD ?? '';
+const smtpFrom = process.env.SMTP_FROM ?? process.env.ADMIN_MAIL_FROM ?? '';
+const smtpSecure = process.env.SMTP_SECURE === 'true';
+const publicBaseUrl = process.env.PUBLIC_BASE_URL ?? '';
+const isProduction = process.env.NODE_ENV === 'production';
+const forceSecureCookies = process.env.FORCE_SECURE_COOKIES === 'true';
+const adminPermissionKeys = new Set(['statistics', 'grave_texts', 'grave_text_roles', 'data_import', 'profile_management']);
+const bootstrapAdminPermissions = [...adminPermissionKeys];
+const graveImportCwd = process.env.GRAVE_IMPORT_CWD ?? resolve(__dirname, '../grave-db');
+const graveImportPython = process.env.GRAVE_IMPORT_PYTHON ?? '/opt/grave-import/bin/python';
+let currentImport = null;
+let lastImport = null;
 
 const pool = new Pool({ connectionString: databaseUrl });
 const startedAt = new Date();
@@ -78,7 +97,7 @@ app.use((request, response, next) => {
     next();
 });
 
-app.use(express.json({ limit: '4kb' }));
+app.use(express.json({ limit: '16kb' }));
 
 const ensureAnalyticsTable = () => {
     analyticsTablePromise ??= pool.query(`
@@ -87,20 +106,89 @@ const ensureAnalyticsTable = () => {
             clicked_at timestamptz NOT NULL DEFAULT now(),
             path text NOT NULL CHECK (char_length(path) BETWEEN 1 AND 512),
             button_key text CHECK (char_length(button_key) BETWEEN 1 AND 200),
-            event_type text NOT NULL DEFAULT 'button_click'
+            event_type text NOT NULL DEFAULT 'button_click',
+            visitor_id text CHECK (char_length(visitor_id) BETWEEN 1 AND 80)
         );
         ALTER TABLE click_events ADD COLUMN IF NOT EXISTS button_key text;
         ALTER TABLE click_events ADD COLUMN IF NOT EXISTS event_type text NOT NULL DEFAULT 'button_click';
+        ALTER TABLE click_events ADD COLUMN IF NOT EXISTS visitor_id text CHECK (char_length(visitor_id) BETWEEN 1 AND 80);
         CREATE INDEX IF NOT EXISTS click_events_clicked_at_idx ON click_events (clicked_at);
         CREATE INDEX IF NOT EXISTS click_events_path_idx ON click_events (path);
         CREATE INDEX IF NOT EXISTS click_events_button_key_idx ON click_events (button_key);
         CREATE INDEX IF NOT EXISTS click_events_event_type_idx ON click_events (event_type);
+        CREATE INDEX IF NOT EXISTS click_events_visitor_id_idx ON click_events (visitor_id);
         CREATE TABLE IF NOT EXISTS analytics_users (
             id bigserial PRIMARY KEY,
             username text NOT NULL UNIQUE,
-            password_hash text NOT NULL,
+            email text UNIQUE,
+            password_hash text,
+            permissions text[] NOT NULL DEFAULT ARRAY['statistics']::text[],
+            password_set_at timestamptz,
+            auth_code_hash text,
+            auth_code_expires_at timestamptz,
+            auth_code_purpose text,
+            auth_code_sent_at timestamptz,
+            auth_link_token_hash text,
+            auth_link_token_lookup text,
+            auth_code_attempts integer NOT NULL DEFAULT 0,
             created_at timestamptz NOT NULL DEFAULT now()
-        )
+        );
+        ALTER TABLE analytics_users ALTER COLUMN password_hash DROP NOT NULL;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS email text;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS permissions text[] NOT NULL DEFAULT ARRAY['statistics']::text[];
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS password_set_at timestamptz;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_code_hash text;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_code_expires_at timestamptz;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_code_purpose text;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_code_sent_at timestamptz;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_link_token_hash text;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_link_token_lookup text;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_code_attempts integer NOT NULL DEFAULT 0;
+        UPDATE analytics_users SET email = username WHERE email IS NULL AND username LIKE '%@%';
+        UPDATE analytics_users SET password_set_at = created_at WHERE password_set_at IS NULL AND password_hash IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_analytics_users_email_unique ON analytics_users (lower(email)) WHERE email IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_analytics_users_auth_link_token_lookup ON analytics_users (auth_link_token_lookup) WHERE auth_link_token_lookup IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS analytics_sessions (
+            token_lookup text PRIMARY KEY,
+            user_id bigint REFERENCES analytics_users(id) ON DELETE CASCADE,
+            username text NOT NULL,
+            permissions text[] NOT NULL,
+            csrf_token text NOT NULL,
+            expires_at timestamptz NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_analytics_sessions_expires_at ON analytics_sessions (expires_at);
+        CREATE TABLE IF NOT EXISTS analytics_rate_limits (
+            key text PRIMARY KEY,
+            count integer NOT NULL DEFAULT 0,
+            reset_at timestamptz NOT NULL,
+            updated_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_analytics_rate_limits_reset_at ON analytics_rate_limits (reset_at);
+        CREATE TABLE IF NOT EXISTS grave_texts (
+            id bigserial PRIMARY KEY,
+            burial_id bigint NOT NULL REFERENCES burials(id) ON DELETE CASCADE,
+            text text NOT NULL CHECK (char_length(btrim(text)) BETWEEN 1 AND 5000),
+            role text NOT NULL CHECK (char_length(btrim(role)) BETWEEN 1 AND 120),
+            text_date date NOT NULL DEFAULT CURRENT_DATE,
+            created_by text NOT NULL CHECK (char_length(btrim(created_by)) BETWEEN 1 AND 120),
+            updated_by text CHECK (char_length(btrim(updated_by)) BETWEEN 1 AND 120),
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS grave_text_roles (
+            id bigserial PRIMARY KEY,
+            name text NOT NULL UNIQUE CHECK (char_length(btrim(name)) BETWEEN 1 AND 120),
+            created_by text NOT NULL DEFAULT 'system' CHECK (char_length(btrim(created_by)) BETWEEN 1 AND 120),
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now()
+        );
+        INSERT INTO grave_text_roles (name)
+        VALUES ('Familie'), ('Freund'), ('Verein')
+        ON CONFLICT (name) DO NOTHING;
+        CREATE INDEX IF NOT EXISTS idx_grave_texts_burial_id ON grave_texts (burial_id, text_date DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_grave_texts_created_by ON grave_texts (created_by);
+        CREATE INDEX IF NOT EXISTS idx_grave_text_roles_name ON grave_text_roles (name)
     `).catch((error) => {
         analyticsTablePromise = undefined;
         throw error;
@@ -113,11 +201,13 @@ app.post('/api/analytics/click', async (request, response) => {
     const path = typeof request.body?.path === 'string' ? request.body.path.trim() : '';
     const buttonKey = typeof request.body?.buttonKey === 'string' ? request.body.buttonKey.trim() : '';
     const eventType = typeof request.body?.eventType === 'string' ? request.body.eventType : 'button_click';
+    const visitorId = typeof request.body?.visitorId === 'string' ? request.body.visitorId.trim() : '';
     const allowedEventTypes = new Set(['button_click', 'page_view', 'search_started']);
 
     if (
         !path.startsWith('/') || path.length > 512 || path.includes('?') || path.includes('#')
         || !allowedEventTypes.has(eventType) || buttonKey.length > 200
+        || visitorId.length > 80
         || (eventType === 'button_click' && !buttonKey)
     ) {
         response.status(400).json({ error: 'Ungültige Klickdaten.' });
@@ -127,8 +217,8 @@ app.post('/api/analytics/click', async (request, response) => {
     try {
         await ensureAnalyticsTable();
         await pool.query(
-            'INSERT INTO click_events (path, button_key, event_type) VALUES ($1, $2, $3)',
-            [path, buttonKey || null, eventType],
+            'INSERT INTO click_events (path, button_key, event_type, visitor_id) VALUES ($1, $2, $3, $4)',
+            [path, buttonKey || null, eventType, visitorId || null],
         );
         response.status(204).end();
     } catch (error) {
@@ -138,8 +228,8 @@ app.post('/api/analytics/click', async (request, response) => {
 });
 
 const safeEqual = (left, right) => {
-    const leftBuffer = Buffer.from(left);
-    const rightBuffer = Buffer.from(right);
+    const leftBuffer = Buffer.from(String(left ?? ''));
+    const rightBuffer = Buffer.from(String(right ?? ''));
 
     return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 };
@@ -158,99 +248,583 @@ const verifyPassword = async (password, storedHash) => {
     return actual.length === expected.length && timingSafeEqual(actual, expected);
 };
 
-const requireAnalyticsAdmin = async (request, response, next) => {
-    const authorization = request.get('authorization') ?? '';
-    const encodedCredentials = authorization.startsWith('Basic ') ? authorization.slice(6) : '';
-    let credentials = '';
+const normalizeEmail = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
+const isValidEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) && value.length <= 254;
+const createLoginCode = () => String(randomInt(100000, 1000000));
+const createSetupToken = () => randomBytes(24).toString('hex');
+const isValidSetupToken = (value) => /^[a-f0-9]{48}$/.test(value);
+const createSessionToken = () => randomBytes(32).toString('hex');
+const createCsrfToken = () => randomBytes(24).toString('hex');
+const tokenLookup = (value) => createHash('sha256').update(String(value)).digest('hex');
 
-    try {
-        credentials = Buffer.from(encodedCredentials, 'base64').toString('utf8');
-    } catch {
-        credentials = '';
+const parseCookies = (request) => Object.fromEntries(
+    String(request.get('cookie') ?? '')
+        .split(';')
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((part) => {
+            const separatorIndex = part.indexOf('=');
+            if (separatorIndex === -1) return [part, ''];
+            return [part.slice(0, separatorIndex), decodeURIComponent(part.slice(separatorIndex + 1))];
+        }),
+);
+
+const isSecureRequest = (request) => forceSecureCookies || request.secure || request.get('x-forwarded-proto') === 'https';
+const cookieOptions = (request, maxAgeSeconds) => [
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${maxAgeSeconds}`,
+    ...(isSecureRequest(request) ? ['Secure'] : []),
+];
+const csrfCookieOptions = (request, maxAgeSeconds) => [
+    'Path=/',
+    'SameSite=Lax',
+    `Max-Age=${maxAgeSeconds}`,
+    ...(isSecureRequest(request) ? ['Secure'] : []),
+];
+
+const setAuthCookies = (request, response, sessionToken, csrfToken) => {
+    response.append('Set-Cookie', `admin_session=${encodeURIComponent(sessionToken)}; ${cookieOptions(request, 8 * 60 * 60).join('; ')}`);
+    response.append('Set-Cookie', `admin_csrf=${encodeURIComponent(csrfToken)}; ${csrfCookieOptions(request, 8 * 60 * 60).join('; ')}`);
+};
+
+const clearAuthCookies = (request, response) => {
+    response.append('Set-Cookie', `admin_session=; ${cookieOptions(request, 0).join('; ')}`);
+    response.append('Set-Cookie', `admin_csrf=; ${csrfCookieOptions(request, 0).join('; ')}`);
+};
+
+const createAdminSession = async ({ request, response, userId = null, username, permissions }) => {
+    const sessionToken = createSessionToken();
+    const csrfToken = createCsrfToken();
+    await pool.query(
+        'DELETE FROM analytics_sessions WHERE expires_at <= now()',
+    );
+    await pool.query(`
+        INSERT INTO analytics_sessions (token_lookup, user_id, username, permissions, csrf_token, expires_at)
+        VALUES ($1, $2, $3, $4, $5, now() + interval '8 hours')
+    `, [tokenLookup(sessionToken), userId, username, permissions, csrfToken]);
+    setAuthCookies(request, response, sessionToken, csrfToken);
+};
+
+const getRateLimitKey = (request, scope, identifier = '') =>
+    `${scope}:${request.ip ?? request.socket.remoteAddress ?? 'unknown'}:${identifier}`;
+
+const isRateLimited = async (key, { limit, windowMs }) => {
+    await ensureAnalyticsTable();
+    await pool.query('DELETE FROM analytics_rate_limits WHERE reset_at <= now()');
+
+    const windowSeconds = Math.max(1, Math.ceil(windowMs / 1000));
+    const result = await pool.query(`
+        INSERT INTO analytics_rate_limits (key, count, reset_at, updated_at)
+        VALUES ($1, 1, now() + ($2::text)::interval, now())
+        ON CONFLICT (key) DO UPDATE SET
+            count = CASE
+                WHEN analytics_rate_limits.reset_at <= now() THEN 1
+                ELSE analytics_rate_limits.count + 1
+            END,
+            reset_at = CASE
+                WHEN analytics_rate_limits.reset_at <= now() THEN now() + ($2::text)::interval
+                ELSE analytics_rate_limits.reset_at
+            END,
+            updated_at = now()
+        RETURNING count
+    `, [key, `${windowSeconds} seconds`]);
+
+    return Number(result.rows[0]?.count ?? 0) > limit;
+};
+
+const rejectIfRateLimited = async (request, response, scope, identifier, options) => {
+    if (!await isRateLimited(getRateLimitKey(request, scope, identifier), options)) {
+        return false;
     }
 
-    const separatorIndex = credentials.indexOf(':');
-    const user = separatorIndex >= 0 ? credentials.slice(0, separatorIndex) : '';
-    const password = separatorIndex >= 0 ? credentials.slice(separatorIndex + 1) : '';
+    response.status(429).json({ error: 'Zu viele Versuche. Bitte später erneut versuchen.' });
+    return true;
+};
 
-    const isBootstrapAdmin = Boolean(
-        analyticsAdminUser && analyticsAdminPassword
-        && safeEqual(user, analyticsAdminUser)
-        && safeEqual(password, analyticsAdminPassword),
-    );
-    let isDatabaseUser = false;
+const readSmtpResponse = (socket) => new Promise((resolveResponse, reject) => {
+    let buffer = '';
+    const onData = (chunk) => {
+        buffer += chunk.toString('utf8');
+        const lines = buffer.split(/\r?\n/).filter(Boolean);
+        const lastLine = lines.at(-1);
+        if (lastLine && /^\d{3} /.test(lastLine)) {
+            socket.off('data', onData);
+            socket.off('error', reject);
+            resolveResponse(buffer);
+        }
+    };
+    socket.on('data', onData);
+    socket.once('error', reject);
+});
 
-    if (!isBootstrapAdmin && user && password) {
-        try {
-            await ensureAnalyticsTable();
-            const result = await pool.query(
-                'SELECT password_hash FROM analytics_users WHERE username = $1',
-                [user],
-            );
-            isDatabaseUser = result.rowCount === 1
-                && await verifyPassword(password, result.rows[0].password_hash);
-        } catch (error) {
-            logError('Failed to authenticate analytics user', error, { user });
+const sendSmtpCommand = async (socket, command, expectedCodes) => {
+    socket.write(`${command}\r\n`);
+    const response = await readSmtpResponse(socket);
+    const code = Number(response.slice(0, 3));
+    if (!expectedCodes.includes(code)) {
+        throw new Error(`SMTP command failed: ${command.replace(/ .*/, ' ***')} -> ${response.trim()}`);
+    }
+    return response;
+};
+
+const escapeMailText = (value) => value.replace(/^\./gm, '..');
+const escapeMailHeader = (value) => String(value).replace(/[\r\n]+/g, ' ').trim();
+const assertSafeSmtpValue = (value, label) => {
+    if (/[\r\n]/.test(String(value))) {
+        throw new Error(`${label} contains invalid control characters.`);
+    }
+};
+const assertSmtpAddress = (value, label) => {
+    assertSafeSmtpValue(value, label);
+    if (!isValidEmail(String(value))) {
+        throw new Error(`${label} is not a valid email address.`);
+    }
+};
+const getMailMessageIdDomain = () => {
+    const fromDomain = smtpFrom.split('@')[1]?.replace(/[<>]/g, '').trim();
+    return fromDomain || smtpHost || 'localhost';
+};
+
+const sendMail = async ({ to, subject, text, fallbackCode = '', fallbackLoginUrl = '' }) => {
+    if (!smtpHost || !smtpFrom) {
+        if (isProduction) {
+            throw new Error('SMTP must be configured in production.');
+        }
+        logInfo('SMTP not configured; admin mail fallback is printed for development', { to, subject });
+        if (fallbackCode) {
+            console.log(`ADMIN_LOGIN_CODE=${fallbackCode}`);
+        }
+        if (fallbackLoginUrl) {
+            console.log(`ADMIN_LOGIN_URL=${fallbackLoginUrl}`);
+        }
+        return { delivered: false };
+    }
+
+    assertSafeSmtpValue(smtpHost, 'SMTP_HOST');
+    if (!Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535) {
+        throw new Error('SMTP_PORT is invalid.');
+    }
+    assertSmtpAddress(smtpFrom, 'SMTP_FROM');
+    assertSmtpAddress(to, 'recipient');
+
+    let socket;
+    try {
+        socket = smtpSecure
+            ? tls.connect({ host: smtpHost, port: smtpPort, servername: smtpHost })
+            : net.connect({ host: smtpHost, port: smtpPort });
+        socket.setTimeout(15000, () => socket.destroy(new Error('SMTP connection timed out.')));
+
+        await readSmtpResponse(socket);
+        let ehloResponse = await sendSmtpCommand(socket, `EHLO ${smtpHost}`, [250]);
+
+        if (!smtpSecure && ehloResponse.includes('STARTTLS')) {
+            await sendSmtpCommand(socket, 'STARTTLS', [220]);
+            socket = tls.connect({ socket, servername: smtpHost });
+            socket.setTimeout(15000, () => socket.destroy(new Error('SMTP TLS connection timed out.')));
+            await new Promise((resolveSocket, reject) => {
+                socket.once('secureConnect', resolveSocket);
+                socket.once('error', reject);
+            });
+            await sendSmtpCommand(socket, `EHLO ${smtpHost}`, [250]);
+        }
+
+        if (smtpUser && smtpPassword) {
+            await sendSmtpCommand(socket, 'AUTH LOGIN', [334]);
+            await sendSmtpCommand(socket, Buffer.from(smtpUser).toString('base64'), [334]);
+            await sendSmtpCommand(socket, Buffer.from(smtpPassword).toString('base64'), [235]);
+        }
+
+        await sendSmtpCommand(socket, `MAIL FROM:<${smtpFrom}>`, [250]);
+        await sendSmtpCommand(socket, `RCPT TO:<${to}>`, [250, 251]);
+        await sendSmtpCommand(socket, 'DATA', [354]);
+        const messageId = `<${randomBytes(16).toString('hex')}@${getMailMessageIdDomain()}>`;
+        socket.write([
+            `From: ${escapeMailHeader(smtpFrom)}`,
+            `To: ${escapeMailHeader(to)}`,
+            `Subject: ${escapeMailHeader(subject)}`,
+            `Date: ${new Date().toUTCString()}`,
+            `Message-ID: ${messageId}`,
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=UTF-8',
+            'Content-Transfer-Encoding: 8bit',
+            '',
+            escapeMailText(text),
+            '.',
+            '',
+        ].join('\r\n'));
+        const dataResponse = await readSmtpResponse(socket);
+        if (Number(dataResponse.slice(0, 3)) !== 250) {
+            throw new Error(`SMTP DATA failed: ${dataResponse.trim()}`);
+        }
+        await sendSmtpCommand(socket, 'QUIT', [221]).catch(() => undefined);
+        return { delivered: true };
+    } finally {
+        socket?.end();
+        socket?.destroy();
+    }
+};
+
+const storeAuthCode = async ({ email, purpose }) => {
+    const code = createLoginCode();
+    const codeHash = await hashPassword(code);
+    const setupToken = purpose === 'setup' || purpose === 'reset' ? createSetupToken() : '';
+    const setupTokenHash = setupToken ? await hashPassword(setupToken) : null;
+    const setupTokenLookup = setupToken ? tokenLookup(setupToken) : null;
+    const result = await pool.query(`
+        UPDATE analytics_users
+        SET auth_code_hash = $2,
+            auth_code_expires_at = now() + interval '30 minutes',
+            auth_code_purpose = $3,
+            auth_code_sent_at = now(),
+            auth_link_token_hash = $4,
+            auth_link_token_lookup = $5,
+            auth_code_attempts = 0
+        WHERE lower(email) = lower($1)
+        RETURNING id, email
+    `, [email, codeHash, purpose, setupTokenHash, setupTokenLookup]);
+
+    if (result.rowCount === 0) {
+        return null;
+    }
+
+    return { user: result.rows[0], code, setupToken };
+};
+
+const sendPasswordCode = async ({ email, code, purpose, setupToken = '' }) => {
+    const isSetup = purpose === 'setup';
+    const baseUrl = publicBaseUrl ? publicBaseUrl.replace(/\/$/, '') : '';
+    const loginPath = isSetup ? '/admin/setup' : '/admin/passwort-zuruecksetzen';
+    const loginUrl = `${baseUrl}${loginPath}?token=${encodeURIComponent(setupToken)}`;
+    await sendMail({
+        to: email,
+        subject: isSetup ? 'dein Profil: Friedhof Goslar Administrations Plattform' : 'Passwort zurücksetzen',
+        fallbackCode: code,
+        fallbackLoginUrl: loginUrl,
+        text: [
+            isSetup
+                ? 'Für dich wurde ein Admin-Profil angelegt.'
+                : 'Du hast einen Code zum Zurücksetzen deines Passworts angefordert.',
+            '',
+            `Code: ${code}`,
+            'Der Code ist 30 Minuten gültig.',
+            '',
+            `Login: ${loginUrl}`,
+        ].join('\n'),
+    });
+};
+
+const findAuthUserByToken = async (authToken, purpose) => {
+    if (!isValidSetupToken(authToken)) {
+        return null;
+    }
+
+    const result = await pool.query(`
+        SELECT id, email, permissions, password_hash, auth_code_hash, auth_link_token_hash, auth_code_attempts
+        FROM analytics_users
+        WHERE auth_code_purpose = $2
+          AND auth_code_hash IS NOT NULL
+          AND auth_link_token_hash IS NOT NULL
+          AND auth_link_token_lookup = $1
+          AND auth_code_expires_at > now()
+    `, [tokenLookup(authToken), purpose]);
+
+    for (const row of result.rows) {
+        if (await verifyPassword(authToken, row.auth_link_token_hash)) {
+            return row;
         }
     }
 
-    if (!isBootstrapAdmin && !isDatabaseUser) {
-        response.set('WWW-Authenticate', 'Basic realm="Analytics"');
+    return null;
+};
+
+const registerFailedCodeAttempt = async (userId) => {
+    if (!userId) return;
+    await pool.query(`
+        UPDATE analytics_users
+        SET auth_code_attempts = auth_code_attempts + 1,
+            auth_code_hash = CASE WHEN auth_code_attempts + 1 >= 5 THEN NULL ELSE auth_code_hash END,
+            auth_code_expires_at = CASE WHEN auth_code_attempts + 1 >= 5 THEN NULL ELSE auth_code_expires_at END,
+            auth_code_purpose = CASE WHEN auth_code_attempts + 1 >= 5 THEN NULL ELSE auth_code_purpose END,
+            auth_link_token_hash = CASE WHEN auth_code_attempts + 1 >= 5 THEN NULL ELSE auth_link_token_hash END,
+            auth_link_token_lookup = CASE WHEN auth_code_attempts + 1 >= 5 THEN NULL ELSE auth_link_token_lookup END
+        WHERE id = $1
+    `, [userId]);
+};
+
+const normalizePermissions = (permissions) => {
+    if (!Array.isArray(permissions)) {
+        return [];
+    }
+
+    return [...new Set(permissions.filter((permission) => adminPermissionKeys.has(permission)))];
+};
+
+const requireAnalyticsAdmin = async (request, response, next) => {
+    const sessionToken = parseCookies(request).admin_session ?? '';
+
+    if (!/^[a-f0-9]{64}$/.test(sessionToken)) {
         response.status(401).json({ error: 'Anmeldung erforderlich.' });
-        return;
-    }
-
-    request.analyticsUser = user;
-    request.analyticsCanManageUsers = isBootstrapAdmin;
-    next();
-};
-
-const requireAnalyticsUserManager = (request, response, next) => {
-    if (!request.analyticsCanManageUsers) {
-        response.status(403).json({ error: 'Nur das Hauptkonto darf Profile verwalten.' });
-        return;
-    }
-    next();
-};
-
-app.get('/api/analytics/users', requireAnalyticsAdmin, requireAnalyticsUserManager, async (_request, response) => {
-    await ensureAnalyticsTable();
-    const result = await pool.query('SELECT id, username, created_at FROM analytics_users ORDER BY username');
-    response.json({ users: result.rows, bootstrapUser: analyticsAdminUser });
-});
-
-app.post('/api/analytics/users', requireAnalyticsAdmin, requireAnalyticsUserManager, async (request, response) => {
-    const username = typeof request.body?.username === 'string' ? request.body.username.trim() : '';
-    const password = typeof request.body?.password === 'string' ? request.body.password : '';
-
-    if (!/^[a-zA-Z0-9._-]{3,64}$/.test(username) || password.length < 12 || password.length > 256) {
-        response.status(400).json({ error: 'Benutzername ungültig oder Passwort kürzer als 12 Zeichen.' });
-        return;
-    }
-    if (safeEqual(username, analyticsAdminUser)) {
-        response.status(409).json({ error: 'Dieser Benutzername ist bereits vergeben.' });
         return;
     }
 
     try {
         await ensureAnalyticsTable();
-        const passwordHash = await hashPassword(password);
-        const result = await pool.query(
-            'INSERT INTO analytics_users (username, password_hash) VALUES ($1, $2) RETURNING id, username, created_at',
-            [username, passwordHash],
-        );
-        response.status(201).json(result.rows[0]);
-    } catch (error) {
-        if (error.code === '23505') {
-            response.status(409).json({ error: 'Dieser Benutzername ist bereits vergeben.' });
+        const result = await pool.query(`
+            SELECT
+                sessions.user_id,
+                sessions.username,
+                sessions.permissions,
+                sessions.csrf_token,
+                users.email,
+                users.password_hash
+            FROM analytics_sessions sessions
+            LEFT JOIN analytics_users users ON users.id = sessions.user_id
+            WHERE sessions.token_lookup = $1
+              AND sessions.expires_at > now()
+        `, [tokenLookup(sessionToken)]);
+
+        if (result.rowCount !== 1) {
+            clearAuthCookies(request, response);
+            response.status(401).json({ error: 'Anmeldung erforderlich.' });
             return;
         }
-        logError('Failed to create analytics user', error, { username });
+
+        const session = result.rows[0];
+        request.analyticsUser = session.username;
+        request.analyticsUserId = session.user_id;
+        request.analyticsUserEmail = session.email;
+        request.analyticsPasswordHash = session.password_hash;
+        request.analyticsSessionTokenLookup = tokenLookup(sessionToken);
+        request.analyticsCsrfToken = session.csrf_token;
+        request.analyticsIsBootstrapAdmin = !session.user_id;
+        request.analyticsCanManageUsers = normalizePermissions(session.permissions).includes('profile_management');
+        request.analyticsPermissions = normalizePermissions(session.permissions);
+        next();
+    } catch (error) {
+        logError('Failed to authenticate analytics session', error);
+        response.status(500).json({ error: 'Anmeldung konnte nicht geprüft werden.' });
+    }
+};
+
+const requireCsrfToken = (request, response, next) => {
+    const csrfHeader = request.get('x-csrf-token') ?? '';
+    const csrfCookie = parseCookies(request).admin_csrf ?? '';
+    if (
+        !request.analyticsCsrfToken
+        || !csrfHeader
+        || !csrfCookie
+        || !safeEqual(csrfHeader, request.analyticsCsrfToken)
+        || !safeEqual(csrfCookie, request.analyticsCsrfToken)
+    ) {
+        response.status(403).json({ error: 'Sicherheitsprüfung fehlgeschlagen. Bitte neu anmelden.' });
+        return;
+    }
+    next();
+};
+
+const requireAdminPermission = (permission, message = 'Keine Berechtigung für diese Funktion.') => (request, response, next) => {
+    if (!request.analyticsPermissions?.includes(permission)) {
+        response.status(403).json({ error: message });
+        return;
+    }
+    next();
+};
+
+const requireAnyAdminPermission = (permissions, message = 'Keine Berechtigung für diese Funktion.') => (request, response, next) => {
+    if (!permissions.some((permission) => request.analyticsPermissions?.includes(permission))) {
+        response.status(403).json({ error: message });
+        return;
+    }
+    next();
+};
+
+const requireAnalyticsUserManager = requireAdminPermission(
+    'profile_management',
+    'Keine Berechtigung zur Profilverwaltung.',
+);
+
+app.post('/api/admin/login', async (request, response) => {
+    const user = typeof request.body?.user === 'string' ? request.body.user.trim() : '';
+    const password = typeof request.body?.password === 'string' ? request.body.password : '';
+
+    if (
+        await rejectIfRateLimited(request, response, 'admin-login-ip', '', { limit: 20, windowMs: 15 * 60 * 1000 })
+        || await rejectIfRateLimited(request, response, 'admin-login-user', user.toLowerCase(), { limit: 8, windowMs: 15 * 60 * 1000 })
+    ) {
+        return;
+    }
+
+    if (!user || !password) {
+        response.status(400).json({ error: 'Mailadresse oder Passwort ist ungültig.' });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        const isBootstrapAdmin = Boolean(
+            analyticsAdminUser && analyticsAdminPassword
+            && safeEqual(user, analyticsAdminUser)
+            && safeEqual(password, analyticsAdminPassword),
+        );
+
+        if (isBootstrapAdmin) {
+            await createAdminSession({
+                request,
+                response,
+                username: analyticsAdminUser,
+                permissions: bootstrapAdminPermissions,
+            });
+            response.json({ message: 'Anmeldung erfolgreich.', username: analyticsAdminUser, permissions: bootstrapAdminPermissions });
+            return;
+        }
+
+        const result = await pool.query(
+            'SELECT id, email, username, password_hash, permissions FROM analytics_users WHERE lower(email) = lower($1) OR username = $1',
+            [user],
+        );
+
+        if (result.rowCount !== 1 || !result.rows[0].password_hash || !await verifyPassword(password, result.rows[0].password_hash)) {
+            response.status(401).json({ error: 'Mailadresse oder Passwort ist falsch.' });
+            return;
+        }
+
+        const permissions = normalizePermissions(result.rows[0].permissions);
+        await createAdminSession({
+            request,
+            response,
+            userId: result.rows[0].id,
+            username: result.rows[0].email ?? result.rows[0].username,
+            permissions,
+        });
+        response.json({ message: 'Anmeldung erfolgreich.', username: result.rows[0].email ?? result.rows[0].username, permissions });
+    } catch (error) {
+        logError('Failed to login admin user', error, { user });
+        response.status(500).json({ error: 'Anmeldung konnte nicht durchgeführt werden.' });
+    }
+});
+
+app.post('/api/admin/logout', requireAnalyticsAdmin, requireCsrfToken, async (request, response) => {
+    try {
+        await pool.query('DELETE FROM analytics_sessions WHERE token_lookup = $1', [request.analyticsSessionTokenLookup]);
+    } catch (error) {
+        logError('Failed to delete admin session', error, { user: request.analyticsUser });
+    }
+    clearAuthCookies(request, response);
+    response.status(204).end();
+});
+
+app.get('/api/analytics/users', requireAnalyticsAdmin, requireAnalyticsUserManager, async (_request, response) => {
+    await ensureAnalyticsTable();
+    const result = await pool.query(`
+        SELECT id, username, email, permissions, password_set_at, auth_code_sent_at, created_at
+        FROM analytics_users
+        ORDER BY COALESCE(email, username)
+    `);
+    response.json({
+        users: result.rows,
+        bootstrapUser: analyticsAdminUser,
+        availablePermissions: bootstrapAdminPermissions,
+    });
+});
+
+app.post('/api/analytics/users', requireAnalyticsAdmin, requireCsrfToken, requireAnalyticsUserManager, async (request, response) => {
+    const email = normalizeEmail(request.body?.email);
+    const permissions = normalizePermissions(request.body?.permissions);
+
+    if (!isValidEmail(email)) {
+        response.status(400).json({ error: 'Bitte eine gültige Mailadresse angeben.' });
+        return;
+    }
+    if (permissions.length === 0) {
+        response.status(400).json({ error: 'Bitte mindestens eine Berechtigung auswählen.' });
+        return;
+    }
+    if (safeEqual(email, analyticsAdminUser)) {
+        response.status(409).json({ error: 'Diese Mailadresse ist bereits vergeben.' });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        const setupCode = createLoginCode();
+        const setupCodeHash = await hashPassword(setupCode);
+        const setupToken = createSetupToken();
+        const setupTokenHash = await hashPassword(setupToken);
+        const setupTokenLookup = tokenLookup(setupToken);
+        const result = await pool.query(`
+            INSERT INTO analytics_users (
+                username, email, password_hash, permissions,
+                auth_code_hash, auth_code_expires_at, auth_code_purpose, auth_code_sent_at,
+                auth_link_token_hash, auth_link_token_lookup, auth_code_attempts
+            )
+            VALUES ($1, $1, NULL, $2, $3, now() + interval '30 minutes', 'setup', now(), $4, $5, 0)
+            ON CONFLICT (username) DO UPDATE SET
+                permissions = EXCLUDED.permissions,
+                auth_code_hash = EXCLUDED.auth_code_hash,
+                auth_code_expires_at = EXCLUDED.auth_code_expires_at,
+                auth_code_purpose = EXCLUDED.auth_code_purpose,
+                auth_code_sent_at = EXCLUDED.auth_code_sent_at,
+                auth_link_token_hash = EXCLUDED.auth_link_token_hash,
+                auth_link_token_lookup = EXCLUDED.auth_link_token_lookup,
+                auth_code_attempts = 0
+            WHERE analytics_users.password_hash IS NULL
+            RETURNING id, username, email, permissions, password_set_at, auth_code_sent_at, created_at
+        `, [email, permissions, setupCodeHash, setupTokenHash, setupTokenLookup]);
+
+        if (result.rowCount === 0) {
+            response.status(409).json({ error: 'Diese Mailadresse ist bereits vergeben und hat bereits ein Passwort.' });
+            return;
+        }
+
+        await sendPasswordCode({ email, code: setupCode, purpose: 'setup', setupToken });
+        response.status(result.rows[0].password_set_at ? 200 : 201).json(result.rows[0]);
+    } catch (error) {
+        if (error.code === '23505') {
+            response.status(409).json({ error: 'Diese Mailadresse ist bereits vergeben.' });
+            return;
+        }
+        logError('Failed to create analytics user', error, { email });
         response.status(500).json({ error: 'Profil konnte nicht angelegt werden.' });
     }
 });
 
-app.delete('/api/analytics/users/:id', requireAnalyticsAdmin, requireAnalyticsUserManager, async (request, response) => {
+app.patch('/api/analytics/users/:id', requireAnalyticsAdmin, requireCsrfToken, requireAnalyticsUserManager, async (request, response) => {
+    if (!/^\d+$/.test(request.params.id)) {
+        response.status(400).json({ error: 'Ungültige Profil-ID.' });
+        return;
+    }
+
+    const permissions = normalizePermissions(request.body?.permissions);
+    if (permissions.length === 0) {
+        response.status(400).json({ error: 'Bitte mindestens eine Berechtigung auswählen.' });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        const result = await pool.query(`
+            UPDATE analytics_users
+            SET permissions = $2
+            WHERE id = $1
+            RETURNING id, username, email, permissions, password_set_at, auth_code_sent_at, created_at
+        `, [request.params.id, permissions]);
+
+        if (result.rowCount === 0) {
+            response.status(404).json({ error: 'Profil wurde nicht gefunden.' });
+            return;
+        }
+
+        await pool.query('DELETE FROM analytics_sessions WHERE user_id = $1', [request.params.id]);
+        response.json(result.rows[0]);
+    } catch (error) {
+        logError('Failed to update analytics user', error, { userId: request.params.id });
+        response.status(500).json({ error: 'Profil konnte nicht gespeichert werden.' });
+    }
+});
+
+app.delete('/api/analytics/users/:id', requireAnalyticsAdmin, requireCsrfToken, requireAnalyticsUserManager, async (request, response) => {
     if (!/^\d+$/.test(request.params.id)) {
         response.status(400).json({ error: 'Ungültige Profil-ID.' });
         return;
@@ -260,7 +834,254 @@ app.delete('/api/analytics/users/:id', requireAnalyticsAdmin, requireAnalyticsUs
     response.status(result.rowCount ? 204 : 404).end();
 });
 
-app.get('/api/analytics/summary', requireAnalyticsAdmin, async (request, response) => {
+app.post('/api/admin/password-code/request', async (request, response) => {
+    const email = normalizeEmail(request.body?.email);
+    const purpose = request.body?.purpose === 'setup' ? 'setup' : 'reset';
+
+    if (
+        await rejectIfRateLimited(request, response, 'admin-code-request-ip', purpose, { limit: 12, windowMs: 60 * 60 * 1000 })
+        || await rejectIfRateLimited(request, response, 'admin-code-request-email', `${purpose}:${email}`, { limit: 3, windowMs: 60 * 60 * 1000 })
+    ) {
+        return;
+    }
+
+    if (!isValidEmail(email)) {
+        response.status(400).json({ error: 'Bitte eine gültige Mailadresse angeben.' });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        const codeResult = await storeAuthCode({ email, purpose });
+        if (codeResult) {
+            await sendPasswordCode({ email, code: codeResult.code, purpose, setupToken: codeResult.setupToken });
+        }
+        response.status(202).json({ message: 'Wenn ein Profil zu dieser Mailadresse existiert, wurde ein Code versendet.' });
+    } catch (error) {
+        logError('Failed to request admin password code', error, { email, purpose });
+        response.status(500).json({ error: 'Code konnte nicht angefordert werden.' });
+    }
+});
+
+app.post('/api/admin/password-code/verify', async (request, response) => {
+    const email = normalizeEmail(request.body?.email);
+    const setupToken = typeof request.body?.setupToken === 'string' ? request.body.setupToken.trim() : '';
+    const code = typeof request.body?.code === 'string' ? request.body.code.trim() : '';
+    const purpose = setupToken ? (request.body?.purpose === 'reset' ? 'reset' : 'setup') : 'reset';
+
+    if (!isValidSetupToken(setupToken) || !/^\d{6}$/.test(code)) {
+        response.status(400).json({ error: 'Mailadresse oder Code ist ungültig.' });
+        return;
+    }
+    if (
+        await rejectIfRateLimited(request, response, 'admin-code-verify-ip', purpose, { limit: 30, windowMs: 15 * 60 * 1000 })
+        || await rejectIfRateLimited(request, response, 'admin-code-verify-subject', `${purpose}:${setupToken || email}`, { limit: 8, windowMs: 15 * 60 * 1000 })
+    ) {
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        if (setupToken) {
+            const setupUser = await findAuthUserByToken(setupToken, purpose);
+            if (!setupUser || !await verifyPassword(code, setupUser.auth_code_hash)) {
+                await registerFailedCodeAttempt(setupUser?.id);
+                response.status(400).json({ error: 'Der Code ist ungültig oder abgelaufen.' });
+                return;
+            }
+
+            response.json({ message: 'Code wurde bestätigt.' });
+            return;
+        }
+
+        const result = await pool.query(`
+            SELECT id, auth_code_hash, auth_code_attempts
+            FROM analytics_users
+            WHERE lower(email) = lower($1)
+              AND auth_code_purpose = 'reset'
+              AND auth_code_hash IS NOT NULL
+              AND auth_code_expires_at > now()
+        `, [email]);
+
+        if (result.rowCount !== 1 || result.rows[0].auth_code_attempts >= 5 || !await verifyPassword(code, result.rows[0].auth_code_hash)) {
+            await registerFailedCodeAttempt(result.rows[0]?.id);
+            response.status(400).json({ error: 'Der Code ist ungültig oder abgelaufen.' });
+            return;
+        }
+
+        response.json({ message: 'Code wurde bestätigt.' });
+    } catch (error) {
+        logError('Failed to verify admin password code', error, { email });
+        response.status(500).json({ error: 'Code konnte nicht geprüft werden.' });
+    }
+});
+
+app.post('/api/admin/password-code/complete', async (request, response) => {
+    const email = normalizeEmail(request.body?.email);
+    const setupToken = typeof request.body?.setupToken === 'string' ? request.body.setupToken.trim() : '';
+    const code = typeof request.body?.code === 'string' ? request.body.code.trim() : '';
+    const password = typeof request.body?.password === 'string' ? request.body.password : '';
+    const purpose = setupToken ? (request.body?.purpose === 'reset' ? 'reset' : 'setup') : 'reset';
+
+    if (!isValidSetupToken(setupToken) || !/^\d{6}$/.test(code) || password.length < 12 || password.length > 256) {
+        response.status(400).json({ error: 'Mailadresse, Code oder Passwort ist ungültig. Das Passwort muss mindestens 12 Zeichen lang sein.' });
+        return;
+    }
+    if (
+        await rejectIfRateLimited(request, response, 'admin-code-complete-ip', purpose, { limit: 30, windowMs: 15 * 60 * 1000 })
+        || await rejectIfRateLimited(request, response, 'admin-code-complete-subject', `${purpose}:${setupToken || email}`, { limit: 8, windowMs: 15 * 60 * 1000 })
+    ) {
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        if (setupToken) {
+            const setupUser = await findAuthUserByToken(setupToken, purpose);
+            if (!setupUser || setupUser.auth_code_attempts >= 5 || !await verifyPassword(code, setupUser.auth_code_hash)) {
+                await registerFailedCodeAttempt(setupUser?.id);
+                response.status(400).json({ error: 'Der Code ist ungültig oder abgelaufen.' });
+                return;
+            }
+            if (setupUser.password_hash && await verifyPassword(password, setupUser.password_hash)) {
+                response.status(400).json({ error: 'Das neue Passwort muss sich vom bisherigen Passwort unterscheiden.' });
+                return;
+            }
+
+            const passwordHash = await hashPassword(password);
+            await pool.query(`
+                UPDATE analytics_users
+                SET password_hash = $2,
+                    password_set_at = now(),
+                    auth_code_hash = NULL,
+                    auth_code_expires_at = NULL,
+                    auth_code_purpose = NULL,
+                    auth_code_sent_at = NULL,
+                    auth_link_token_hash = NULL,
+                    auth_link_token_lookup = NULL,
+                    auth_code_attempts = 0
+                WHERE id = $1
+            `, [setupUser.id, passwordHash]);
+            await pool.query('DELETE FROM analytics_sessions WHERE user_id = $1', [setupUser.id]);
+
+            await createAdminSession({
+                request,
+                response,
+                userId: setupUser.id,
+                username: setupUser.email,
+                permissions: normalizePermissions(setupUser.permissions),
+            });
+            response.json({ message: 'Passwort wurde gesetzt.', email: setupUser.email });
+            return;
+        }
+
+        const result = await pool.query(`
+            SELECT id, email, permissions, password_hash, auth_code_hash, auth_code_attempts
+            FROM analytics_users
+            WHERE lower(email) = lower($1)
+              AND auth_code_purpose = 'reset'
+              AND auth_code_hash IS NOT NULL
+              AND auth_code_expires_at > now()
+        `, [email]);
+
+        if (result.rowCount !== 1 || result.rows[0].auth_code_attempts >= 5 || !await verifyPassword(code, result.rows[0].auth_code_hash)) {
+            await registerFailedCodeAttempt(result.rows[0]?.id);
+            response.status(400).json({ error: 'Der Code ist ungültig oder abgelaufen.' });
+            return;
+        }
+        if (result.rows[0].password_hash && await verifyPassword(password, result.rows[0].password_hash)) {
+            response.status(400).json({ error: 'Das neue Passwort muss sich vom bisherigen Passwort unterscheiden.' });
+            return;
+        }
+
+        const passwordHash = await hashPassword(password);
+        await pool.query(`
+            UPDATE analytics_users
+            SET password_hash = $2,
+                password_set_at = now(),
+                auth_code_hash = NULL,
+                auth_code_expires_at = NULL,
+                auth_code_purpose = NULL,
+                auth_code_sent_at = NULL,
+                auth_link_token_hash = NULL,
+                auth_link_token_lookup = NULL,
+                auth_code_attempts = 0
+            WHERE id = $1
+        `, [result.rows[0].id, passwordHash]);
+        await pool.query('DELETE FROM analytics_sessions WHERE user_id = $1', [result.rows[0].id]);
+
+        await createAdminSession({
+            request,
+            response,
+            userId: result.rows[0].id,
+            username: result.rows[0].email ?? email,
+            permissions: normalizePermissions(result.rows[0].permissions),
+        });
+        response.json({ message: 'Passwort wurde gesetzt.', email: result.rows[0].email ?? email });
+    } catch (error) {
+        logError('Failed to complete admin password setup', error, { email });
+        response.status(500).json({ error: 'Passwort konnte nicht gesetzt werden.' });
+    }
+});
+
+app.get('/api/admin/me', requireAnalyticsAdmin, async (request, response) => {
+    response.json({
+        username: request.analyticsUser,
+        permissions: request.analyticsPermissions ?? [],
+        canManageUsers: request.analyticsPermissions?.includes('profile_management') ?? false,
+        canChangePassword: !request.analyticsIsBootstrapAdmin,
+    });
+});
+
+app.post('/api/admin/password', requireAnalyticsAdmin, requireCsrfToken, async (request, response) => {
+    const currentPassword = typeof request.body?.currentPassword === 'string' ? request.body.currentPassword : '';
+    const newPassword = typeof request.body?.newPassword === 'string' ? request.body.newPassword : '';
+
+    if (await rejectIfRateLimited(request, response, 'admin-password-change', request.analyticsUser, { limit: 8, windowMs: 15 * 60 * 1000 })) {
+        return;
+    }
+    if (request.analyticsIsBootstrapAdmin) {
+        response.status(403).json({ error: 'Das Passwort des Hauptkontos wird über die Server-Konfiguration geändert.' });
+        return;
+    }
+    if (!request.analyticsUserId || !request.analyticsPasswordHash) {
+        response.status(401).json({ error: 'Anmeldung erforderlich.' });
+        return;
+    }
+    if (newPassword.length < 12 || newPassword.length > 256) {
+        response.status(400).json({ error: 'Das neue Passwort muss mindestens 12 Zeichen lang sein.' });
+        return;
+    }
+    if (!await verifyPassword(currentPassword, request.analyticsPasswordHash)) {
+        response.status(400).json({ error: 'Das aktuelle Passwort ist falsch.' });
+        return;
+    }
+    if (await verifyPassword(newPassword, request.analyticsPasswordHash)) {
+        response.status(400).json({ error: 'Das neue Passwort muss sich vom bisherigen Passwort unterscheiden.' });
+        return;
+    }
+
+    try {
+        const newPasswordHash = await hashPassword(newPassword);
+        await pool.query(`
+            UPDATE analytics_users
+            SET password_hash = $2,
+                password_set_at = now()
+            WHERE id = $1
+        `, [request.analyticsUserId, newPasswordHash]);
+        await pool.query(
+            'DELETE FROM analytics_sessions WHERE user_id = $1 AND token_lookup <> $2',
+            [request.analyticsUserId, request.analyticsSessionTokenLookup],
+        );
+
+        response.json({ message: 'Passwort wurde geändert.', email: request.analyticsUserEmail || request.analyticsUser });
+    } catch (error) {
+        logError('Failed to change admin password', error, { user: request.analyticsUser });
+        response.status(500).json({ error: 'Passwort konnte nicht geändert werden.' });
+    }
+});
+
+app.get('/api/analytics/summary', requireAnalyticsAdmin, requireAdminPermission('statistics', 'Keine Berechtigung für Statistiken.'), async (request, response) => {
     const requestedDays = Number(request.query.days ?? 30);
     const days = Number.isInteger(requestedDays) && requestedDays >= 1 && requestedDays <= 365
         ? requestedDays
@@ -268,70 +1089,71 @@ app.get('/api/analytics/summary', requireAnalyticsAdmin, async (request, respons
 
     try {
         await ensureAnalyticsTable();
-        const [totalResult, dailyResult, pagesResult, buttonsResult, insightsResult, stationsResult, qualityResult] = await Promise.all([
+        const [overviewResult, dailyVisitorsResult, graveDetailsDailyResult, graveDetailsResult, stationsResult, qualityResult] = await Promise.all([
             pool.query(`
-                SELECT COUNT(*)::integer AS clicks
+                SELECT
+                    COUNT(DISTINCT visitor_id) FILTER (
+                        WHERE event_type = 'page_view'
+                          AND visitor_id IS NOT NULL
+                    )::integer AS visitors,
+                    COUNT(*) FILTER (
+                        WHERE event_type = 'page_view'
+                          AND path ~ '^/grabstellensuche/[^/]+$'
+                    )::integer AS grave_detail_views,
+                    COUNT(*) FILTER (
+                        WHERE event_type = 'page_view'
+                          AND path ~ '^/tour/station/[^/]+$'
+                    )::integer AS station_views
                 FROM click_events
                 WHERE clicked_at >= now() - ($1::integer * interval '1 day')
-                  AND event_type = 'button_click'
             `, [days]),
             pool.query(`
-                SELECT clicked_at::date::text AS label, COUNT(*)::integer AS clicks
+                SELECT
+                    clicked_at::date::text AS label,
+                    COUNT(DISTINCT visitor_id) FILTER (WHERE visitor_id IS NOT NULL)::integer AS visitors,
+                    COUNT(*) FILTER (WHERE visitor_id IS NULL)::integer AS legacyEvents
                 FROM click_events
                 WHERE clicked_at >= now() - ($1::integer * interval '1 day')
-                  AND event_type = 'button_click'
+                  AND event_type = 'page_view'
                 GROUP BY clicked_at::date
                 ORDER BY clicked_at::date
             `, [days]),
             pool.query(`
-                SELECT path AS label, COUNT(*)::integer AS clicks
+                SELECT clicked_at::date::text AS label, COUNT(*)::integer AS views
                 FROM click_events
                 WHERE clicked_at >= now() - ($1::integer * interval '1 day')
                   AND event_type = 'page_view'
-                  AND path !~ '^/grabstellensuche/[^/]+$'
-                  AND path !~ '^/tour/station/[^/]+$'
-                GROUP BY path
-                ORDER BY clicks DESC, path
-                LIMIT 20
-            `, [days]),
-            pool.query(`
-                SELECT path || ' · ' || button_key AS label, COUNT(*)::integer AS clicks
-                FROM click_events
-                WHERE clicked_at >= now() - ($1::integer * interval '1 day')
-                  AND button_key IS NOT NULL
-                  AND event_type = 'button_click'
-                GROUP BY path, button_key
-                ORDER BY clicks DESC, path, button_key
-                LIMIT 30
+                  AND path ~ '^/grabstellensuche/[^/]+$'
+                GROUP BY clicked_at::date
+                ORDER BY clicked_at::date
             `, [days]),
             pool.query(`
                 SELECT
-                    COUNT(*) FILTER (WHERE clicked_at >= now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/')::integer AS home_views,
-                    COUNT(*) FILTER (WHERE clicked_at < now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/')::integer AS previous_home_views,
-                    COUNT(*) FILTER (WHERE clicked_at >= now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/grabstellensuche')::integer AS grave_search_views,
-                    COUNT(*) FILTER (WHERE clicked_at < now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/grabstellensuche')::integer AS previous_grave_search_views,
-                    COUNT(*) FILTER (WHERE clicked_at >= now() - ($1::integer * interval '1 day') AND event_type = 'search_started' AND path = '/grabstellensuche')::integer AS searches_started,
-                    COUNT(*) FILTER (WHERE clicked_at < now() - ($1::integer * interval '1 day') AND event_type = 'search_started' AND path = '/grabstellensuche')::integer AS previous_searches_started,
-                    COUNT(*) FILTER (WHERE clicked_at >= now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path ~ '^/grabstellensuche/[^/]+$')::integer AS grave_detail_views,
-                    COUNT(*) FILTER (WHERE clicked_at < now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path ~ '^/grabstellensuche/[^/]+$')::integer AS previous_grave_detail_views,
-                    COUNT(*) FILTER (
-                        WHERE clicked_at >= now() - ($1::integer * interval '1 day') AND event_type = 'button_click' AND path = '/'
-                          AND button_key = 'Friedhofstour Erinnerungskultur'
-                    )::integer AS tour_clicks,
-                    COUNT(*) FILTER (
-                        WHERE clicked_at < now() - ($1::integer * interval '1 day') AND event_type = 'button_click' AND path = '/'
-                          AND button_key = 'Friedhofstour Erinnerungskultur'
-                    )::integer AS previous_tour_clicks,
-                    COUNT(*) FILTER (WHERE clicked_at >= now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/tour/home')::integer AS onboarding_views,
-                    COUNT(*) FILTER (WHERE clicked_at < now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/tour/home')::integer AS previous_onboarding_views,
-                    COUNT(*) FILTER (WHERE clicked_at >= now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/tour/map')::integer AS map_views,
-                    COUNT(*) FILTER (WHERE clicked_at < now() - ($1::integer * interval '1 day') AND event_type = 'page_view' AND path = '/tour/map')::integer AS previous_map_views
+                    b.id::text AS id,
+                    CONCAT_WS(' ',
+                        NULLIF(p.first_name, ''),
+                        NULLIF(p.last_name, '')
+                    ) AS person_name,
+                    CONCAT_WS(' · ',
+                        NULLIF(g.cemetery_code, ''),
+                        CASE WHEN NULLIF(g.grave_field, '') IS NOT NULL THEN 'Grabfeld ' || g.grave_field END,
+                        CASE WHEN NULLIF(g.grave_number, '') IS NOT NULL THEN 'Grab ' || g.grave_number END
+                    ) AS grave_location,
+                    COUNT(click_events.*)::integer AS views
                 FROM click_events
-                WHERE clicked_at >= now() - ($1::integer * interval '2 days')
+                JOIN burials b ON ('/grabstellensuche/' || b.id::text) = click_events.path
+                JOIN persons p ON p.id = b.person_id
+                LEFT JOIN graves g ON g.id = b.grave_id
+                WHERE click_events.clicked_at >= now() - ($1::integer * interval '1 day')
+                  AND click_events.event_type = 'page_view'
+                  AND click_events.path ~ '^/grabstellensuche/[^/]+$'
+                GROUP BY b.id, p.first_name, p.last_name, g.cemetery_code, g.grave_field, g.grave_number
+                ORDER BY views DESC, person_name, grave_location
+                LIMIT 30
             `, [days]),
             pool.query(`
                 SELECT regexp_replace(path, '^/tour/station/', 'Station ') AS label,
-                       COUNT(*)::integer AS clicks
+                       COUNT(*)::integer AS views
                 FROM click_events
                 WHERE clicked_at >= now() - ($1::integer * interval '1 day')
                   AND event_type = 'page_view'
@@ -344,59 +1166,474 @@ app.get('/api/analytics/summary', requireAnalyticsAdmin, async (request, respons
                     MAX(clicked_at) AS last_event_at,
                     COUNT(*) FILTER (
                         WHERE clicked_at >= now() - ($1::integer * interval '1 day')
-                          AND event_type = 'button_click'
-                          AND (button_key IS NULL OR button_key IN ('button', 'div'))
-                    )::integer AS ambiguous_events,
-                    COUNT(*) FILTER (
-                        WHERE clicked_at >= now() - ($1::integer * interval '1 day')
-                          AND event_type = 'button_click' AND button_key IS NULL
+                          AND event_type = 'page_view'
+                          AND visitor_id IS NULL
                     )::integer AS legacy_events
                 FROM click_events
             `, [days]),
         ]);
 
-        const insights = insightsResult.rows[0];
-        const tourClicks = insights?.tour_clicks ?? 0;
-        const mapViews = insights?.map_views ?? 0;
-        const toMetric = (name) => {
-            const value = insights?.[name] ?? 0;
-            const previous = insights?.[`previous_${name}`] ?? 0;
-
-            return {
-                value,
-                previous,
-                changePercent: previous > 0 ? Math.round(((value - previous) / previous) * 100) : null,
-            };
-        };
+        const overview = overviewResult.rows[0] ?? {};
 
         response.json({
             days,
-            totalClicks: totalResult.rows[0]?.clicks ?? 0,
-            daily: dailyResult.rows,
-            pages: pagesResult.rows,
-            buttons: buttonsResult.rows,
-            insights: {
-                homeViews: toMetric('home_views'),
-                graveSearchViews: toMetric('grave_search_views'),
-                searchesStarted: toMetric('searches_started'),
-                graveDetailViews: toMetric('grave_detail_views'),
-                tourClicks: toMetric('tour_clicks'),
-                onboardingViews: toMetric('onboarding_views'),
-                mapViews: toMetric('map_views'),
-                onboardingCompletionRate: tourClicks > 0 ? Math.round((mapViews / tourClicks) * 100) : 0,
+            overview: {
+                visitors: overview.visitors ?? 0,
+                graveDetailViews: overview.grave_detail_views ?? 0,
+                stationViews: overview.station_views ?? 0,
+            },
+            dailyVisitors: dailyVisitorsResult.rows,
+            graveDetails: {
+                daily: graveDetailsDailyResult.rows,
+                items: graveDetailsResult.rows.map((row) => ({
+                    label: [row.person_name, row.grave_location].filter(Boolean).join(' · ') || `Grabstelle ${row.id}`,
+                    views: row.views,
+                })),
             },
             stations: stationsResult.rows,
             quality: {
                 lastEventAt: qualityResult.rows[0]?.last_event_at ?? null,
-                ambiguousEvents: qualityResult.rows[0]?.ambiguous_events ?? 0,
                 legacyEvents: qualityResult.rows[0]?.legacy_events ?? 0,
             },
-            canManageUsers: request.analyticsCanManageUsers,
+            canManageUsers: request.analyticsPermissions?.includes('profile_management') ?? false,
         });
     } catch (error) {
         logError('Failed to load analytics summary', error, { days });
         response.status(500).json({ error: 'Statistik konnte nicht geladen werden.' });
     }
+});
+
+const formatIsoDate = (dateValue) => {
+    if (!dateValue) {
+        return '';
+    }
+
+    if (dateValue instanceof Date) {
+        return dateValue.toISOString().slice(0, 10);
+    }
+
+    return String(dateValue).slice(0, 10);
+};
+
+const mapRowToGraveText = (row) => ({
+    id: String(row.id),
+    graveId: String(row.burial_id),
+    text: row.text,
+    role: row.role,
+    date: formatIsoDate(row.text_date),
+    createdBy: row.created_by,
+    updatedBy: row.updated_by ?? '',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+});
+
+const normalizeGraveTextInput = (body) => {
+    const graveId = typeof body?.graveId === 'string' || typeof body?.graveId === 'number'
+        ? String(body.graveId).trim()
+        : '';
+    const text = typeof body?.text === 'string' ? body.text.trim() : '';
+    const role = typeof body?.role === 'string' ? body.role.trim() : '';
+    const date = typeof body?.date === 'string' ? body.date.trim() : '';
+
+    return { graveId, text, role, date };
+};
+
+const validateGraveTextInput = ({ graveId, text, role, date }, { requireGraveId }) => {
+    if (requireGraveId && !/^\d+$/.test(graveId)) {
+        return 'Ungültige Grab-ID.';
+    }
+
+    if (text.length < 1 || text.length > 5000) {
+        return 'Der Text muss zwischen 1 und 5000 Zeichen lang sein.';
+    }
+
+    if (role.length < 1 || role.length > 120) {
+        return 'Die Rolle muss zwischen 1 und 120 Zeichen lang sein.';
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return 'Das Datum muss im Format JJJJ-MM-TT angegeben werden.';
+    }
+
+    return '';
+};
+
+const mapRowToGraveTextRole = (row) => ({
+    id: String(row.id),
+    name: row.name,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+});
+
+const normalizeRoleName = (body) => (typeof body?.name === 'string' ? body.name.trim() : '');
+
+app.get('/api/admin/grave-text-roles', requireAnalyticsAdmin, requireAnyAdminPermission(['grave_texts', 'grave_text_roles']), async (_request, response) => {
+    try {
+        await ensureAnalyticsTable();
+        const result = await pool.query(`
+            SELECT id, name, created_by, created_at, updated_at
+            FROM grave_text_roles
+            ORDER BY name
+        `);
+        response.json({ items: result.rows.map(mapRowToGraveTextRole) });
+    } catch (error) {
+        logError('Failed to load grave text roles', error);
+        response.status(500).json({ error: 'Rollen konnten nicht geladen werden.' });
+    }
+});
+
+app.post('/api/admin/grave-text-roles', requireAnalyticsAdmin, requireCsrfToken, requireAdminPermission('grave_text_roles', 'Keine Berechtigung zur Rollenverwaltung.'), async (request, response) => {
+    const name = normalizeRoleName(request.body);
+
+    if (name.length < 1 || name.length > 120) {
+        response.status(400).json({ error: 'Die Rolle muss zwischen 1 und 120 Zeichen lang sein.' });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        const result = await pool.query(`
+            INSERT INTO grave_text_roles (name, created_by)
+            VALUES ($1, $2)
+            RETURNING id, name, created_by, created_at, updated_at
+        `, [name, request.analyticsUser]);
+        response.status(201).json(mapRowToGraveTextRole(result.rows[0]));
+    } catch (error) {
+        if (error.code === '23505') {
+            response.status(409).json({ error: 'Diese Rolle existiert bereits.' });
+            return;
+        }
+        logError('Failed to create grave text role', error, { name });
+        response.status(500).json({ error: 'Rolle konnte nicht angelegt werden.' });
+    }
+});
+
+app.put('/api/admin/grave-text-roles/:id', requireAnalyticsAdmin, requireCsrfToken, requireAdminPermission('grave_text_roles', 'Keine Berechtigung zur Rollenverwaltung.'), async (request, response) => {
+    if (!/^\d+$/.test(request.params.id)) {
+        response.status(400).json({ error: 'Ungültige Rollen-ID.' });
+        return;
+    }
+
+    const name = normalizeRoleName(request.body);
+
+    if (name.length < 1 || name.length > 120) {
+        response.status(400).json({ error: 'Die Rolle muss zwischen 1 und 120 Zeichen lang sein.' });
+        return;
+    }
+
+    const client = await pool.connect();
+    try {
+        await ensureAnalyticsTable();
+        await client.query('BEGIN');
+
+        const existingResult = await client.query('SELECT name FROM grave_text_roles WHERE id = $1 FOR UPDATE', [request.params.id]);
+        if (existingResult.rowCount === 0) {
+            await client.query('ROLLBACK');
+            response.status(404).json({ error: 'Rolle nicht gefunden.' });
+            return;
+        }
+
+        const oldName = existingResult.rows[0].name;
+        const result = await client.query(`
+            UPDATE grave_text_roles
+            SET name = $2,
+                updated_at = now()
+            WHERE id = $1
+            RETURNING id, name, created_by, created_at, updated_at
+        `, [request.params.id, name]);
+        await client.query('UPDATE grave_texts SET role = $2, updated_at = now() WHERE role = $1', [oldName, name]);
+        await client.query('COMMIT');
+
+        response.json(mapRowToGraveTextRole(result.rows[0]));
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        if (error.code === '23505') {
+            response.status(409).json({ error: 'Diese Rolle existiert bereits.' });
+            return;
+        }
+        logError('Failed to update grave text role', error, { roleId: request.params.id, name });
+        response.status(500).json({ error: 'Rolle konnte nicht gespeichert werden.' });
+    } finally {
+        client.release();
+    }
+});
+
+app.delete('/api/admin/grave-text-roles/:id', requireAnalyticsAdmin, requireCsrfToken, requireAdminPermission('grave_text_roles', 'Keine Berechtigung zur Rollenverwaltung.'), async (request, response) => {
+    if (!/^\d+$/.test(request.params.id)) {
+        response.status(400).json({ error: 'Ungültige Rollen-ID.' });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        const result = await pool.query(`
+            DELETE FROM grave_text_roles
+            WHERE id = $1
+              AND NOT EXISTS (
+                  SELECT 1 FROM grave_texts WHERE grave_texts.role = grave_text_roles.name
+              )
+        `, [request.params.id]);
+
+        if (result.rowCount) {
+            response.status(204).end();
+            return;
+        }
+
+        response.status(409).json({ error: 'Rolle wird noch von Texten verwendet.' });
+    } catch (error) {
+        logError('Failed to delete grave text role', error, { roleId: request.params.id });
+        response.status(500).json({ error: 'Rolle konnte nicht gelöscht werden.' });
+    }
+});
+
+app.get('/api/admin/grave-texts', requireAnalyticsAdmin, requireAdminPermission('grave_texts', 'Keine Berechtigung für Grabtexte.'), async (request, response) => {
+    const graveId = String(request.query.graveId ?? '').trim();
+    const searchQuery = String(request.query.q ?? '').trim();
+
+    if (graveId && !/^\d+$/.test(graveId)) {
+        response.status(400).json({ error: 'Ungültige Grab-ID.' });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+
+        const params = [];
+        const clauses = [];
+
+        if (graveId) {
+            params.push(graveId);
+            clauses.push(`gt.burial_id = $${params.length}`);
+        }
+
+        if (searchQuery) {
+            params.push(`%${searchQuery}%`);
+            clauses.push(`(
+                gt.text ILIKE $${params.length}
+                OR gt.role ILIKE $${params.length}
+                OR p.first_name ILIKE $${params.length}
+                OR p.last_name ILIKE $${params.length}
+                OR p.birth_name ILIKE $${params.length}
+                OR gt.burial_id::text ILIKE $${params.length}
+            )`);
+        }
+
+        params.push(100);
+        const result = await pool.query(`
+            SELECT
+                gt.id,
+                gt.burial_id,
+                gt.text,
+                gt.role,
+                gt.text_date,
+                gt.created_by,
+                gt.updated_by,
+                gt.created_at,
+                gt.updated_at,
+                p.first_name,
+                p.last_name,
+                p.birth_name,
+                g.cemetery_code,
+                g.grave_field,
+                g.grave_number
+            FROM grave_texts gt
+            JOIN burials b ON b.id = gt.burial_id
+            JOIN persons p ON p.id = b.person_id
+            LEFT JOIN graves g ON g.id = b.grave_id
+            ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+            ORDER BY gt.text_date DESC, gt.id DESC
+            LIMIT $${params.length}
+        `, params);
+
+        response.json({
+            items: result.rows.map((row) => ({
+                ...mapRowToGraveText(row),
+                graveLabel: [
+                    [row.first_name, row.last_name].filter(Boolean).join(' '),
+                    row.birth_name && `geb. ${row.birth_name}`,
+                    row.cemetery_code,
+                    row.grave_field && `Grabfeld ${row.grave_field}`,
+                    row.grave_number && `Grab ${row.grave_number}`,
+                ].filter(Boolean).join(' · '),
+            })),
+        });
+    } catch (error) {
+        logError('Failed to load grave texts', error, { graveId, searchQuery });
+        response.status(500).json({ error: 'Grabtexte konnten nicht geladen werden.' });
+    }
+});
+
+app.post('/api/admin/grave-texts', requireAnalyticsAdmin, requireCsrfToken, requireAdminPermission('grave_texts', 'Keine Berechtigung für Grabtexte.'), async (request, response) => {
+    const input = normalizeGraveTextInput(request.body);
+    const validationError = validateGraveTextInput(input, { requireGraveId: true });
+
+    if (validationError) {
+        response.status(400).json({ error: validationError });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+
+        const result = await pool.query(`
+            INSERT INTO grave_texts (burial_id, text, role, text_date, created_by)
+            SELECT b.id, $2, $3, $4::date, $5
+            FROM burials b
+            WHERE b.id = $1
+            RETURNING id, burial_id, text, role, text_date, created_by, updated_by, created_at, updated_at
+        `, [input.graveId, input.text, input.role, input.date, request.analyticsUser]);
+
+        if (result.rowCount === 0) {
+            response.status(404).json({ error: 'Grabstelle nicht gefunden.' });
+            return;
+        }
+
+        response.status(201).json(mapRowToGraveText(result.rows[0]));
+    } catch (error) {
+        logError('Failed to create grave text', error, { graveId: input.graveId });
+        response.status(500).json({ error: 'Grabtext konnte nicht angelegt werden.' });
+    }
+});
+
+app.put('/api/admin/grave-texts/:id', requireAnalyticsAdmin, requireCsrfToken, requireAdminPermission('grave_texts', 'Keine Berechtigung für Grabtexte.'), async (request, response) => {
+    if (!/^\d+$/.test(request.params.id)) {
+        response.status(400).json({ error: 'Ungültige Text-ID.' });
+        return;
+    }
+
+    const input = normalizeGraveTextInput(request.body);
+    const validationError = validateGraveTextInput(input, { requireGraveId: false });
+
+    if (validationError) {
+        response.status(400).json({ error: validationError });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+
+        const result = await pool.query(`
+            UPDATE grave_texts
+            SET text = $2,
+                role = $3,
+                text_date = $4::date,
+                updated_by = $5,
+                updated_at = now()
+            WHERE id = $1
+            RETURNING id, burial_id, text, role, text_date, created_by, updated_by, created_at, updated_at
+        `, [request.params.id, input.text, input.role, input.date, request.analyticsUser]);
+
+        if (result.rowCount === 0) {
+            response.status(404).json({ error: 'Grabtext nicht gefunden.' });
+            return;
+        }
+
+        response.json(mapRowToGraveText(result.rows[0]));
+    } catch (error) {
+        logError('Failed to update grave text', error, { textId: request.params.id });
+        response.status(500).json({ error: 'Grabtext konnte nicht gespeichert werden.' });
+    }
+});
+
+app.delete('/api/admin/grave-texts/:id', requireAnalyticsAdmin, requireCsrfToken, requireAdminPermission('grave_texts', 'Keine Berechtigung für Grabtexte.'), async (request, response) => {
+    if (!/^\d+$/.test(request.params.id)) {
+        response.status(400).json({ error: 'Ungültige Text-ID.' });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        const result = await pool.query('DELETE FROM grave_texts WHERE id = $1', [request.params.id]);
+        response.status(result.rowCount ? 204 : 404).end();
+    } catch (error) {
+        logError('Failed to delete grave text', error, { textId: request.params.id });
+        response.status(500).json({ error: 'Grabtext konnte nicht gelöscht werden.' });
+    }
+});
+
+const serializeImportStatus = () => {
+    const activeImport = currentImport ?? lastImport;
+
+    if (!activeImport) {
+        return { running: false, lastRun: null };
+    }
+
+    return {
+        running: currentImport !== null,
+        lastRun: {
+            id: activeImport.id,
+            startedAt: activeImport.startedAt,
+            finishedAt: activeImport.finishedAt,
+            status: activeImport.status,
+            exitCode: activeImport.exitCode,
+            startedBy: activeImport.startedBy,
+            output: activeImport.output.slice(-12000),
+        },
+    };
+};
+
+app.get('/api/admin/data-import', requireAnalyticsAdmin, requireAdminPermission('data_import', 'Keine Berechtigung für Datenimporte.'), async (_request, response) => {
+    response.json(serializeImportStatus());
+});
+
+app.post('/api/admin/data-import', requireAnalyticsAdmin, requireCsrfToken, requireAdminPermission('data_import', 'Keine Berechtigung für Datenimporte.'), async (request, response) => {
+    if (currentImport) {
+        response.status(409).json({ error: 'Es läuft bereits ein Import.', status: serializeImportStatus() });
+        return;
+    }
+
+    const importRun = {
+        id: randomBytes(8).toString('hex'),
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        status: 'running',
+        exitCode: null,
+        startedBy: request.analyticsUser,
+        output: '',
+    };
+    currentImport = importRun;
+    lastImport = importRun;
+
+    const child = spawn(graveImportPython, [
+        'scripts/import_excel.py',
+        '--data-dir',
+        'data',
+        '--schema',
+        'sql/schema.sql',
+        '--init-schema',
+    ], {
+        cwd: graveImportCwd,
+        env: {
+            ...process.env,
+            DATABASE_URL: databaseUrl,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const appendOutput = (chunk) => {
+        importRun.output = `${importRun.output}${chunk.toString()}`.slice(-20000);
+    };
+
+    child.stdout.on('data', appendOutput);
+    child.stderr.on('data', appendOutput);
+    child.on('error', (error) => {
+        importRun.status = 'failed';
+        importRun.finishedAt = new Date().toISOString();
+        importRun.output = `${importRun.output}\n${error.message}`.slice(-20000);
+        currentImport = null;
+        logError('Data import failed to start', error, { importId: importRun.id });
+    });
+    child.on('close', (exitCode) => {
+        importRun.status = exitCode === 0 ? 'succeeded' : 'failed';
+        importRun.exitCode = exitCode;
+        importRun.finishedAt = new Date().toISOString();
+        currentImport = null;
+        logInfo('Data import finished', { importId: importRun.id, exitCode });
+    });
+
+    logInfo('Data import started', { importId: importRun.id, startedBy: request.analyticsUser });
+    response.status(202).json(serializeImportStatus());
 });
 
 const cemeteryNames = {
@@ -533,6 +1770,7 @@ const mapRowToGrave = (row) => {
         navigationUrl: cemeteryAddress
             ? `https://maps.apple.com/?daddr=${encodeURIComponent(cemeteryAddress)}`
             : cemetery?.url ?? '',
+        graveTexts: [],
         searchText,
     };
 };
@@ -788,29 +2026,47 @@ app.get('/api/graves', async (request, response) => {
         logError('Failed to load graves', error, {
             queryKeys: Object.keys(request.query),
         });
-        response.status(500).json({ error: 'Grabstellen konnten nicht geladen werden.', details: error.message });
+        response.status(500).json({ error: 'Grabstellen konnten nicht geladen werden.' });
     }
 });
 
 app.get('/api/graves/:id', async (request, response) => {
-    try {
-        logInfo('Loading grave detail', { id: request.params.id });
+    const burialId = String(request.params.id ?? '');
+    if (!/^\d+$/.test(burialId)) {
+        response.status(400).json({ error: 'Ungültige Grab-ID.' });
+        return;
+    }
 
-        const result = await pool.query(`${baseQuery} WHERE b.id = $1 LIMIT 1`, [request.params.id]);
+    try {
+        logInfo('Loading grave detail', { id: burialId });
+        await ensureAnalyticsTable();
+
+        const result = await pool.query(`${baseQuery} WHERE b.id = $1 LIMIT 1`, [burialId]);
 
         if (result.rowCount === 0) {
-            logInfo('Grave detail not found', { id: request.params.id });
+            logInfo('Grave detail not found', { id: burialId });
             response.status(404).json({ error: 'Grabstelle nicht gefunden.' });
             return;
         }
 
-        logInfo('Loaded grave detail', { id: request.params.id });
-        response.json(mapRowToGrave(result.rows[0]));
+        const graveTextResult = await pool.query(`
+            SELECT id, burial_id, text, role, text_date, created_by, updated_by, created_at, updated_at
+            FROM grave_texts
+            WHERE burial_id = $1
+            ORDER BY text_date DESC, id DESC
+        `, [burialId]);
+        const grave = {
+            ...mapRowToGrave(result.rows[0]),
+            graveTexts: graveTextResult.rows.map(mapRowToGraveText),
+        };
+
+        logInfo('Loaded grave detail', { id: burialId, graveTexts: grave.graveTexts.length });
+        response.json(grave);
     } catch (error) {
         logError('Failed to load grave detail', error, {
-            id: request.params.id,
+            id: burialId,
         });
-        response.status(500).json({ error: 'Grabstelle konnte nicht geladen werden.', details: error.message });
+        response.status(500).json({ error: 'Grabstelle konnte nicht geladen werden.' });
     }
 });
 
