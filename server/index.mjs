@@ -3,18 +3,30 @@ import pg from 'pg';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomInt, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import net from 'node:net';
+import tls from 'node:tls';
 
 const { Pool } = pg;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
+app.set('trust proxy', true);
 const port = Number(process.env.API_PORT ?? 3001);
 const host = process.env.API_HOST ?? '127.0.0.1';
 const databaseUrl = process.env.DATABASE_URL ?? 'postgresql://grave:grave@db:5432/gravedb';
 const analyticsAdminUser = process.env.ANALYTICS_ADMIN_USER ?? '';
 const analyticsAdminPassword = process.env.ANALYTICS_ADMIN_PASSWORD ?? '';
+const smtpHost = process.env.SMTP_HOST ?? '';
+const smtpPort = Number(process.env.SMTP_PORT ?? 587);
+const smtpUser = process.env.SMTP_USER ?? '';
+const smtpPassword = process.env.SMTP_PASSWORD ?? '';
+const smtpFrom = process.env.SMTP_FROM ?? process.env.ADMIN_MAIL_FROM ?? '';
+const smtpSecure = process.env.SMTP_SECURE === 'true';
+const publicBaseUrl = process.env.PUBLIC_BASE_URL ?? '';
+const isProduction = process.env.NODE_ENV === 'production';
+const forceSecureCookies = process.env.FORCE_SECURE_COOKIES === 'true';
 const adminPermissionKeys = new Set(['statistics', 'grave_texts', 'grave_text_roles', 'data_import', 'profile_management']);
 const bootstrapAdminPermissions = [...adminPermissionKeys];
 const graveImportCwd = process.env.GRAVE_IMPORT_CWD ?? resolve(__dirname, '../grave-db');
@@ -108,11 +120,51 @@ const ensureAnalyticsTable = () => {
         CREATE TABLE IF NOT EXISTS analytics_users (
             id bigserial PRIMARY KEY,
             username text NOT NULL UNIQUE,
-            password_hash text NOT NULL,
+            email text UNIQUE,
+            password_hash text,
             permissions text[] NOT NULL DEFAULT ARRAY['statistics']::text[],
+            password_set_at timestamptz,
+            auth_code_hash text,
+            auth_code_expires_at timestamptz,
+            auth_code_purpose text,
+            auth_code_sent_at timestamptz,
+            auth_link_token_hash text,
+            auth_link_token_lookup text,
+            auth_code_attempts integer NOT NULL DEFAULT 0,
             created_at timestamptz NOT NULL DEFAULT now()
         );
+        ALTER TABLE analytics_users ALTER COLUMN password_hash DROP NOT NULL;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS email text;
         ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS permissions text[] NOT NULL DEFAULT ARRAY['statistics']::text[];
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS password_set_at timestamptz;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_code_hash text;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_code_expires_at timestamptz;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_code_purpose text;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_code_sent_at timestamptz;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_link_token_hash text;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_link_token_lookup text;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_code_attempts integer NOT NULL DEFAULT 0;
+        UPDATE analytics_users SET email = username WHERE email IS NULL AND username LIKE '%@%';
+        UPDATE analytics_users SET password_set_at = created_at WHERE password_set_at IS NULL AND password_hash IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_analytics_users_email_unique ON analytics_users (lower(email)) WHERE email IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_analytics_users_auth_link_token_lookup ON analytics_users (auth_link_token_lookup) WHERE auth_link_token_lookup IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS analytics_sessions (
+            token_lookup text PRIMARY KEY,
+            user_id bigint REFERENCES analytics_users(id) ON DELETE CASCADE,
+            username text NOT NULL,
+            permissions text[] NOT NULL,
+            csrf_token text NOT NULL,
+            expires_at timestamptz NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_analytics_sessions_expires_at ON analytics_sessions (expires_at);
+        CREATE TABLE IF NOT EXISTS analytics_rate_limits (
+            key text PRIMARY KEY,
+            count integer NOT NULL DEFAULT 0,
+            reset_at timestamptz NOT NULL,
+            updated_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_analytics_rate_limits_reset_at ON analytics_rate_limits (reset_at);
         CREATE TABLE IF NOT EXISTS grave_texts (
             id bigserial PRIMARY KEY,
             burial_id bigint NOT NULL REFERENCES burials(id) ON DELETE CASCADE,
@@ -176,8 +228,8 @@ app.post('/api/analytics/click', async (request, response) => {
 });
 
 const safeEqual = (left, right) => {
-    const leftBuffer = Buffer.from(left);
-    const rightBuffer = Buffer.from(right);
+    const leftBuffer = Buffer.from(String(left ?? ''));
+    const rightBuffer = Buffer.from(String(right ?? ''));
 
     return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 };
@@ -196,6 +248,311 @@ const verifyPassword = async (password, storedHash) => {
     return actual.length === expected.length && timingSafeEqual(actual, expected);
 };
 
+const normalizeEmail = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
+const isValidEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) && value.length <= 254;
+const createLoginCode = () => String(randomInt(100000, 1000000));
+const createSetupToken = () => randomBytes(24).toString('hex');
+const isValidSetupToken = (value) => /^[a-f0-9]{48}$/.test(value);
+const createSessionToken = () => randomBytes(32).toString('hex');
+const createCsrfToken = () => randomBytes(24).toString('hex');
+const tokenLookup = (value) => createHash('sha256').update(String(value)).digest('hex');
+
+const parseCookies = (request) => Object.fromEntries(
+    String(request.get('cookie') ?? '')
+        .split(';')
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((part) => {
+            const separatorIndex = part.indexOf('=');
+            if (separatorIndex === -1) return [part, ''];
+            return [part.slice(0, separatorIndex), decodeURIComponent(part.slice(separatorIndex + 1))];
+        }),
+);
+
+const isSecureRequest = (request) => forceSecureCookies || request.secure || request.get('x-forwarded-proto') === 'https';
+const cookieOptions = (request, maxAgeSeconds) => [
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${maxAgeSeconds}`,
+    ...(isSecureRequest(request) ? ['Secure'] : []),
+];
+const csrfCookieOptions = (request, maxAgeSeconds) => [
+    'Path=/',
+    'SameSite=Lax',
+    `Max-Age=${maxAgeSeconds}`,
+    ...(isSecureRequest(request) ? ['Secure'] : []),
+];
+
+const setAuthCookies = (request, response, sessionToken, csrfToken) => {
+    response.append('Set-Cookie', `admin_session=${encodeURIComponent(sessionToken)}; ${cookieOptions(request, 8 * 60 * 60).join('; ')}`);
+    response.append('Set-Cookie', `admin_csrf=${encodeURIComponent(csrfToken)}; ${csrfCookieOptions(request, 8 * 60 * 60).join('; ')}`);
+};
+
+const clearAuthCookies = (request, response) => {
+    response.append('Set-Cookie', `admin_session=; ${cookieOptions(request, 0).join('; ')}`);
+    response.append('Set-Cookie', `admin_csrf=; ${csrfCookieOptions(request, 0).join('; ')}`);
+};
+
+const createAdminSession = async ({ request, response, userId = null, username, permissions }) => {
+    const sessionToken = createSessionToken();
+    const csrfToken = createCsrfToken();
+    await pool.query(
+        'DELETE FROM analytics_sessions WHERE expires_at <= now()',
+    );
+    await pool.query(`
+        INSERT INTO analytics_sessions (token_lookup, user_id, username, permissions, csrf_token, expires_at)
+        VALUES ($1, $2, $3, $4, $5, now() + interval '8 hours')
+    `, [tokenLookup(sessionToken), userId, username, permissions, csrfToken]);
+    setAuthCookies(request, response, sessionToken, csrfToken);
+};
+
+const getRateLimitKey = (request, scope, identifier = '') =>
+    `${scope}:${request.ip ?? request.socket.remoteAddress ?? 'unknown'}:${identifier}`;
+
+const isRateLimited = async (key, { limit, windowMs }) => {
+    await ensureAnalyticsTable();
+    await pool.query('DELETE FROM analytics_rate_limits WHERE reset_at <= now()');
+
+    const windowSeconds = Math.max(1, Math.ceil(windowMs / 1000));
+    const result = await pool.query(`
+        INSERT INTO analytics_rate_limits (key, count, reset_at, updated_at)
+        VALUES ($1, 1, now() + ($2::text)::interval, now())
+        ON CONFLICT (key) DO UPDATE SET
+            count = CASE
+                WHEN analytics_rate_limits.reset_at <= now() THEN 1
+                ELSE analytics_rate_limits.count + 1
+            END,
+            reset_at = CASE
+                WHEN analytics_rate_limits.reset_at <= now() THEN now() + ($2::text)::interval
+                ELSE analytics_rate_limits.reset_at
+            END,
+            updated_at = now()
+        RETURNING count
+    `, [key, `${windowSeconds} seconds`]);
+
+    return Number(result.rows[0]?.count ?? 0) > limit;
+};
+
+const rejectIfRateLimited = async (request, response, scope, identifier, options) => {
+    if (!await isRateLimited(getRateLimitKey(request, scope, identifier), options)) {
+        return false;
+    }
+
+    response.status(429).json({ error: 'Zu viele Versuche. Bitte später erneut versuchen.' });
+    return true;
+};
+
+const readSmtpResponse = (socket) => new Promise((resolveResponse, reject) => {
+    let buffer = '';
+    const onData = (chunk) => {
+        buffer += chunk.toString('utf8');
+        const lines = buffer.split(/\r?\n/).filter(Boolean);
+        const lastLine = lines.at(-1);
+        if (lastLine && /^\d{3} /.test(lastLine)) {
+            socket.off('data', onData);
+            socket.off('error', reject);
+            resolveResponse(buffer);
+        }
+    };
+    socket.on('data', onData);
+    socket.once('error', reject);
+});
+
+const sendSmtpCommand = async (socket, command, expectedCodes) => {
+    socket.write(`${command}\r\n`);
+    const response = await readSmtpResponse(socket);
+    const code = Number(response.slice(0, 3));
+    if (!expectedCodes.includes(code)) {
+        throw new Error(`SMTP command failed: ${command.replace(/ .*/, ' ***')} -> ${response.trim()}`);
+    }
+    return response;
+};
+
+const escapeMailText = (value) => value.replace(/^\./gm, '..');
+const escapeMailHeader = (value) => String(value).replace(/[\r\n]+/g, ' ').trim();
+const assertSafeSmtpValue = (value, label) => {
+    if (/[\r\n]/.test(String(value))) {
+        throw new Error(`${label} contains invalid control characters.`);
+    }
+};
+const assertSmtpAddress = (value, label) => {
+    assertSafeSmtpValue(value, label);
+    if (!isValidEmail(String(value))) {
+        throw new Error(`${label} is not a valid email address.`);
+    }
+};
+const getMailMessageIdDomain = () => {
+    const fromDomain = smtpFrom.split('@')[1]?.replace(/[<>]/g, '').trim();
+    return fromDomain || smtpHost || 'localhost';
+};
+
+const sendMail = async ({ to, subject, text, fallbackCode = '', fallbackLoginUrl = '' }) => {
+    if (!smtpHost || !smtpFrom) {
+        if (isProduction) {
+            throw new Error('SMTP must be configured in production.');
+        }
+        logInfo('SMTP not configured; admin mail fallback is printed for development', { to, subject });
+        if (fallbackCode) {
+            console.log(`ADMIN_LOGIN_CODE=${fallbackCode}`);
+        }
+        if (fallbackLoginUrl) {
+            console.log(`ADMIN_LOGIN_URL=${fallbackLoginUrl}`);
+        }
+        return { delivered: false };
+    }
+
+    assertSafeSmtpValue(smtpHost, 'SMTP_HOST');
+    if (!Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535) {
+        throw new Error('SMTP_PORT is invalid.');
+    }
+    assertSmtpAddress(smtpFrom, 'SMTP_FROM');
+    assertSmtpAddress(to, 'recipient');
+
+    let socket;
+    try {
+        socket = smtpSecure
+            ? tls.connect({ host: smtpHost, port: smtpPort, servername: smtpHost })
+            : net.connect({ host: smtpHost, port: smtpPort });
+        socket.setTimeout(15000, () => socket.destroy(new Error('SMTP connection timed out.')));
+
+        await readSmtpResponse(socket);
+        let ehloResponse = await sendSmtpCommand(socket, `EHLO ${smtpHost}`, [250]);
+
+        if (!smtpSecure && ehloResponse.includes('STARTTLS')) {
+            await sendSmtpCommand(socket, 'STARTTLS', [220]);
+            socket = tls.connect({ socket, servername: smtpHost });
+            socket.setTimeout(15000, () => socket.destroy(new Error('SMTP TLS connection timed out.')));
+            await new Promise((resolveSocket, reject) => {
+                socket.once('secureConnect', resolveSocket);
+                socket.once('error', reject);
+            });
+            await sendSmtpCommand(socket, `EHLO ${smtpHost}`, [250]);
+        }
+
+        if (smtpUser && smtpPassword) {
+            await sendSmtpCommand(socket, 'AUTH LOGIN', [334]);
+            await sendSmtpCommand(socket, Buffer.from(smtpUser).toString('base64'), [334]);
+            await sendSmtpCommand(socket, Buffer.from(smtpPassword).toString('base64'), [235]);
+        }
+
+        await sendSmtpCommand(socket, `MAIL FROM:<${smtpFrom}>`, [250]);
+        await sendSmtpCommand(socket, `RCPT TO:<${to}>`, [250, 251]);
+        await sendSmtpCommand(socket, 'DATA', [354]);
+        const messageId = `<${randomBytes(16).toString('hex')}@${getMailMessageIdDomain()}>`;
+        socket.write([
+            `From: ${escapeMailHeader(smtpFrom)}`,
+            `To: ${escapeMailHeader(to)}`,
+            `Subject: ${escapeMailHeader(subject)}`,
+            `Date: ${new Date().toUTCString()}`,
+            `Message-ID: ${messageId}`,
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=UTF-8',
+            'Content-Transfer-Encoding: 8bit',
+            '',
+            escapeMailText(text),
+            '.',
+            '',
+        ].join('\r\n'));
+        const dataResponse = await readSmtpResponse(socket);
+        if (Number(dataResponse.slice(0, 3)) !== 250) {
+            throw new Error(`SMTP DATA failed: ${dataResponse.trim()}`);
+        }
+        await sendSmtpCommand(socket, 'QUIT', [221]).catch(() => undefined);
+        return { delivered: true };
+    } finally {
+        socket?.end();
+        socket?.destroy();
+    }
+};
+
+const storeAuthCode = async ({ email, purpose }) => {
+    const code = createLoginCode();
+    const codeHash = await hashPassword(code);
+    const setupToken = purpose === 'setup' || purpose === 'reset' ? createSetupToken() : '';
+    const setupTokenHash = setupToken ? await hashPassword(setupToken) : null;
+    const setupTokenLookup = setupToken ? tokenLookup(setupToken) : null;
+    const result = await pool.query(`
+        UPDATE analytics_users
+        SET auth_code_hash = $2,
+            auth_code_expires_at = now() + interval '30 minutes',
+            auth_code_purpose = $3,
+            auth_code_sent_at = now(),
+            auth_link_token_hash = $4,
+            auth_link_token_lookup = $5,
+            auth_code_attempts = 0
+        WHERE lower(email) = lower($1)
+        RETURNING id, email
+    `, [email, codeHash, purpose, setupTokenHash, setupTokenLookup]);
+
+    if (result.rowCount === 0) {
+        return null;
+    }
+
+    return { user: result.rows[0], code, setupToken };
+};
+
+const sendPasswordCode = async ({ email, code, purpose, setupToken = '' }) => {
+    const isSetup = purpose === 'setup';
+    const baseUrl = publicBaseUrl ? publicBaseUrl.replace(/\/$/, '') : '';
+    const loginPath = isSetup ? '/admin/setup' : '/admin/passwort-zuruecksetzen';
+    const loginUrl = `${baseUrl}${loginPath}?token=${encodeURIComponent(setupToken)}`;
+    await sendMail({
+        to: email,
+        subject: isSetup ? 'dein Profil: Friedhof Goslar Administrations Plattform' : 'Passwort zurücksetzen',
+        fallbackCode: code,
+        fallbackLoginUrl: loginUrl,
+        text: [
+            isSetup
+                ? 'Für dich wurde ein Admin-Profil angelegt.'
+                : 'Du hast einen Code zum Zurücksetzen deines Passworts angefordert.',
+            '',
+            `Code: ${code}`,
+            'Der Code ist 30 Minuten gültig.',
+            '',
+            `Login: ${loginUrl}`,
+        ].join('\n'),
+    });
+};
+
+const findAuthUserByToken = async (authToken, purpose) => {
+    if (!isValidSetupToken(authToken)) {
+        return null;
+    }
+
+    const result = await pool.query(`
+        SELECT id, email, permissions, password_hash, auth_code_hash, auth_link_token_hash, auth_code_attempts
+        FROM analytics_users
+        WHERE auth_code_purpose = $2
+          AND auth_code_hash IS NOT NULL
+          AND auth_link_token_hash IS NOT NULL
+          AND auth_link_token_lookup = $1
+          AND auth_code_expires_at > now()
+    `, [tokenLookup(authToken), purpose]);
+
+    for (const row of result.rows) {
+        if (await verifyPassword(authToken, row.auth_link_token_hash)) {
+            return row;
+        }
+    }
+
+    return null;
+};
+
+const registerFailedCodeAttempt = async (userId) => {
+    if (!userId) return;
+    await pool.query(`
+        UPDATE analytics_users
+        SET auth_code_attempts = auth_code_attempts + 1,
+            auth_code_hash = CASE WHEN auth_code_attempts + 1 >= 5 THEN NULL ELSE auth_code_hash END,
+            auth_code_expires_at = CASE WHEN auth_code_attempts + 1 >= 5 THEN NULL ELSE auth_code_expires_at END,
+            auth_code_purpose = CASE WHEN auth_code_attempts + 1 >= 5 THEN NULL ELSE auth_code_purpose END,
+            auth_link_token_hash = CASE WHEN auth_code_attempts + 1 >= 5 THEN NULL ELSE auth_link_token_hash END,
+            auth_link_token_lookup = CASE WHEN auth_code_attempts + 1 >= 5 THEN NULL ELSE auth_link_token_lookup END
+        WHERE id = $1
+    `, [userId]);
+};
+
 const normalizePermissions = (permissions) => {
     if (!Array.isArray(permissions)) {
         return [];
@@ -205,53 +562,65 @@ const normalizePermissions = (permissions) => {
 };
 
 const requireAnalyticsAdmin = async (request, response, next) => {
-    const authorization = request.get('authorization') ?? '';
-    const encodedCredentials = authorization.startsWith('Basic ') ? authorization.slice(6) : '';
-    let credentials = '';
+    const sessionToken = parseCookies(request).admin_session ?? '';
 
-    try {
-        credentials = Buffer.from(encodedCredentials, 'base64').toString('utf8');
-    } catch {
-        credentials = '';
-    }
-
-    const separatorIndex = credentials.indexOf(':');
-    const user = separatorIndex >= 0 ? credentials.slice(0, separatorIndex) : '';
-    const password = separatorIndex >= 0 ? credentials.slice(separatorIndex + 1) : '';
-
-    const isBootstrapAdmin = Boolean(
-        analyticsAdminUser && analyticsAdminPassword
-        && safeEqual(user, analyticsAdminUser)
-        && safeEqual(password, analyticsAdminPassword),
-    );
-    let isDatabaseUser = false;
-    let databasePermissions = [];
-
-    if (!isBootstrapAdmin && user && password) {
-        try {
-            await ensureAnalyticsTable();
-            const result = await pool.query(
-                'SELECT password_hash, permissions FROM analytics_users WHERE username = $1',
-                [user],
-            );
-            if (result.rowCount === 1 && await verifyPassword(password, result.rows[0].password_hash)) {
-                isDatabaseUser = true;
-                databasePermissions = normalizePermissions(result.rows[0].permissions);
-            }
-        } catch (error) {
-            logError('Failed to authenticate analytics user', error, { user });
-        }
-    }
-
-    if (!isBootstrapAdmin && !isDatabaseUser) {
-        response.set('WWW-Authenticate', 'Basic realm="Analytics"');
+    if (!/^[a-f0-9]{64}$/.test(sessionToken)) {
         response.status(401).json({ error: 'Anmeldung erforderlich.' });
         return;
     }
 
-    request.analyticsUser = user;
-    request.analyticsCanManageUsers = isBootstrapAdmin;
-    request.analyticsPermissions = isBootstrapAdmin ? bootstrapAdminPermissions : databasePermissions;
+    try {
+        await ensureAnalyticsTable();
+        const result = await pool.query(`
+            SELECT
+                sessions.user_id,
+                sessions.username,
+                sessions.permissions,
+                sessions.csrf_token,
+                users.email,
+                users.password_hash
+            FROM analytics_sessions sessions
+            LEFT JOIN analytics_users users ON users.id = sessions.user_id
+            WHERE sessions.token_lookup = $1
+              AND sessions.expires_at > now()
+        `, [tokenLookup(sessionToken)]);
+
+        if (result.rowCount !== 1) {
+            clearAuthCookies(request, response);
+            response.status(401).json({ error: 'Anmeldung erforderlich.' });
+            return;
+        }
+
+        const session = result.rows[0];
+        request.analyticsUser = session.username;
+        request.analyticsUserId = session.user_id;
+        request.analyticsUserEmail = session.email;
+        request.analyticsPasswordHash = session.password_hash;
+        request.analyticsSessionTokenLookup = tokenLookup(sessionToken);
+        request.analyticsCsrfToken = session.csrf_token;
+        request.analyticsIsBootstrapAdmin = !session.user_id;
+        request.analyticsCanManageUsers = normalizePermissions(session.permissions).includes('profile_management');
+        request.analyticsPermissions = normalizePermissions(session.permissions);
+        next();
+    } catch (error) {
+        logError('Failed to authenticate analytics session', error);
+        response.status(500).json({ error: 'Anmeldung konnte nicht geprüft werden.' });
+    }
+};
+
+const requireCsrfToken = (request, response, next) => {
+    const csrfHeader = request.get('x-csrf-token') ?? '';
+    const csrfCookie = parseCookies(request).admin_csrf ?? '';
+    if (
+        !request.analyticsCsrfToken
+        || !csrfHeader
+        || !csrfCookie
+        || !safeEqual(csrfHeader, request.analyticsCsrfToken)
+        || !safeEqual(csrfCookie, request.analyticsCsrfToken)
+    ) {
+        response.status(403).json({ error: 'Sicherheitsprüfung fehlgeschlagen. Bitte neu anmelden.' });
+        return;
+    }
     next();
 };
 
@@ -276,9 +645,83 @@ const requireAnalyticsUserManager = requireAdminPermission(
     'Keine Berechtigung zur Profilverwaltung.',
 );
 
+app.post('/api/admin/login', async (request, response) => {
+    const user = typeof request.body?.user === 'string' ? request.body.user.trim() : '';
+    const password = typeof request.body?.password === 'string' ? request.body.password : '';
+
+    if (
+        await rejectIfRateLimited(request, response, 'admin-login-ip', '', { limit: 20, windowMs: 15 * 60 * 1000 })
+        || await rejectIfRateLimited(request, response, 'admin-login-user', user.toLowerCase(), { limit: 8, windowMs: 15 * 60 * 1000 })
+    ) {
+        return;
+    }
+
+    if (!user || !password) {
+        response.status(400).json({ error: 'Mailadresse oder Passwort ist ungültig.' });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        const isBootstrapAdmin = Boolean(
+            analyticsAdminUser && analyticsAdminPassword
+            && safeEqual(user, analyticsAdminUser)
+            && safeEqual(password, analyticsAdminPassword),
+        );
+
+        if (isBootstrapAdmin) {
+            await createAdminSession({
+                request,
+                response,
+                username: analyticsAdminUser,
+                permissions: bootstrapAdminPermissions,
+            });
+            response.json({ message: 'Anmeldung erfolgreich.', username: analyticsAdminUser, permissions: bootstrapAdminPermissions });
+            return;
+        }
+
+        const result = await pool.query(
+            'SELECT id, email, username, password_hash, permissions FROM analytics_users WHERE lower(email) = lower($1) OR username = $1',
+            [user],
+        );
+
+        if (result.rowCount !== 1 || !result.rows[0].password_hash || !await verifyPassword(password, result.rows[0].password_hash)) {
+            response.status(401).json({ error: 'Mailadresse oder Passwort ist falsch.' });
+            return;
+        }
+
+        const permissions = normalizePermissions(result.rows[0].permissions);
+        await createAdminSession({
+            request,
+            response,
+            userId: result.rows[0].id,
+            username: result.rows[0].email ?? result.rows[0].username,
+            permissions,
+        });
+        response.json({ message: 'Anmeldung erfolgreich.', username: result.rows[0].email ?? result.rows[0].username, permissions });
+    } catch (error) {
+        logError('Failed to login admin user', error, { user });
+        response.status(500).json({ error: 'Anmeldung konnte nicht durchgeführt werden.' });
+    }
+});
+
+app.post('/api/admin/logout', requireAnalyticsAdmin, requireCsrfToken, async (request, response) => {
+    try {
+        await pool.query('DELETE FROM analytics_sessions WHERE token_lookup = $1', [request.analyticsSessionTokenLookup]);
+    } catch (error) {
+        logError('Failed to delete admin session', error, { user: request.analyticsUser });
+    }
+    clearAuthCookies(request, response);
+    response.status(204).end();
+});
+
 app.get('/api/analytics/users', requireAnalyticsAdmin, requireAnalyticsUserManager, async (_request, response) => {
     await ensureAnalyticsTable();
-    const result = await pool.query('SELECT id, username, permissions, created_at FROM analytics_users ORDER BY username');
+    const result = await pool.query(`
+        SELECT id, username, email, permissions, password_set_at, auth_code_sent_at, created_at
+        FROM analytics_users
+        ORDER BY COALESCE(email, username)
+    `);
     response.json({
         users: result.rows,
         bootstrapUser: analyticsAdminUser,
@@ -286,43 +729,102 @@ app.get('/api/analytics/users', requireAnalyticsAdmin, requireAnalyticsUserManag
     });
 });
 
-app.post('/api/analytics/users', requireAnalyticsAdmin, requireAnalyticsUserManager, async (request, response) => {
-    const username = typeof request.body?.username === 'string' ? request.body.username.trim() : '';
-    const password = typeof request.body?.password === 'string' ? request.body.password : '';
+app.post('/api/analytics/users', requireAnalyticsAdmin, requireCsrfToken, requireAnalyticsUserManager, async (request, response) => {
+    const email = normalizeEmail(request.body?.email);
     const permissions = normalizePermissions(request.body?.permissions);
 
-    if (!/^[a-zA-Z0-9._-]{3,64}$/.test(username) || password.length < 12 || password.length > 256) {
-        response.status(400).json({ error: 'Benutzername ungültig oder Passwort kürzer als 12 Zeichen.' });
+    if (!isValidEmail(email)) {
+        response.status(400).json({ error: 'Bitte eine gültige Mailadresse angeben.' });
         return;
     }
     if (permissions.length === 0) {
         response.status(400).json({ error: 'Bitte mindestens eine Berechtigung auswählen.' });
         return;
     }
-    if (safeEqual(username, analyticsAdminUser)) {
-        response.status(409).json({ error: 'Dieser Benutzername ist bereits vergeben.' });
+    if (safeEqual(email, analyticsAdminUser)) {
+        response.status(409).json({ error: 'Diese Mailadresse ist bereits vergeben.' });
         return;
     }
 
     try {
         await ensureAnalyticsTable();
-        const passwordHash = await hashPassword(password);
-        const result = await pool.query(
-            'INSERT INTO analytics_users (username, password_hash, permissions) VALUES ($1, $2, $3) RETURNING id, username, permissions, created_at',
-            [username, passwordHash, permissions],
-        );
-        response.status(201).json(result.rows[0]);
-    } catch (error) {
-        if (error.code === '23505') {
-            response.status(409).json({ error: 'Dieser Benutzername ist bereits vergeben.' });
+        const setupCode = createLoginCode();
+        const setupCodeHash = await hashPassword(setupCode);
+        const setupToken = createSetupToken();
+        const setupTokenHash = await hashPassword(setupToken);
+        const setupTokenLookup = tokenLookup(setupToken);
+        const result = await pool.query(`
+            INSERT INTO analytics_users (
+                username, email, password_hash, permissions,
+                auth_code_hash, auth_code_expires_at, auth_code_purpose, auth_code_sent_at,
+                auth_link_token_hash, auth_link_token_lookup, auth_code_attempts
+            )
+            VALUES ($1, $1, NULL, $2, $3, now() + interval '30 minutes', 'setup', now(), $4, $5, 0)
+            ON CONFLICT (username) DO UPDATE SET
+                permissions = EXCLUDED.permissions,
+                auth_code_hash = EXCLUDED.auth_code_hash,
+                auth_code_expires_at = EXCLUDED.auth_code_expires_at,
+                auth_code_purpose = EXCLUDED.auth_code_purpose,
+                auth_code_sent_at = EXCLUDED.auth_code_sent_at,
+                auth_link_token_hash = EXCLUDED.auth_link_token_hash,
+                auth_link_token_lookup = EXCLUDED.auth_link_token_lookup,
+                auth_code_attempts = 0
+            WHERE analytics_users.password_hash IS NULL
+            RETURNING id, username, email, permissions, password_set_at, auth_code_sent_at, created_at
+        `, [email, permissions, setupCodeHash, setupTokenHash, setupTokenLookup]);
+
+        if (result.rowCount === 0) {
+            response.status(409).json({ error: 'Diese Mailadresse ist bereits vergeben und hat bereits ein Passwort.' });
             return;
         }
-        logError('Failed to create analytics user', error, { username });
+
+        await sendPasswordCode({ email, code: setupCode, purpose: 'setup', setupToken });
+        response.status(result.rows[0].password_set_at ? 200 : 201).json(result.rows[0]);
+    } catch (error) {
+        if (error.code === '23505') {
+            response.status(409).json({ error: 'Diese Mailadresse ist bereits vergeben.' });
+            return;
+        }
+        logError('Failed to create analytics user', error, { email });
         response.status(500).json({ error: 'Profil konnte nicht angelegt werden.' });
     }
 });
 
-app.delete('/api/analytics/users/:id', requireAnalyticsAdmin, requireAnalyticsUserManager, async (request, response) => {
+app.patch('/api/analytics/users/:id', requireAnalyticsAdmin, requireCsrfToken, requireAnalyticsUserManager, async (request, response) => {
+    if (!/^\d+$/.test(request.params.id)) {
+        response.status(400).json({ error: 'Ungültige Profil-ID.' });
+        return;
+    }
+
+    const permissions = normalizePermissions(request.body?.permissions);
+    if (permissions.length === 0) {
+        response.status(400).json({ error: 'Bitte mindestens eine Berechtigung auswählen.' });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        const result = await pool.query(`
+            UPDATE analytics_users
+            SET permissions = $2
+            WHERE id = $1
+            RETURNING id, username, email, permissions, password_set_at, auth_code_sent_at, created_at
+        `, [request.params.id, permissions]);
+
+        if (result.rowCount === 0) {
+            response.status(404).json({ error: 'Profil wurde nicht gefunden.' });
+            return;
+        }
+
+        await pool.query('DELETE FROM analytics_sessions WHERE user_id = $1', [request.params.id]);
+        response.json(result.rows[0]);
+    } catch (error) {
+        logError('Failed to update analytics user', error, { userId: request.params.id });
+        response.status(500).json({ error: 'Profil konnte nicht gespeichert werden.' });
+    }
+});
+
+app.delete('/api/analytics/users/:id', requireAnalyticsAdmin, requireCsrfToken, requireAnalyticsUserManager, async (request, response) => {
     if (!/^\d+$/.test(request.params.id)) {
         response.status(400).json({ error: 'Ungültige Profil-ID.' });
         return;
@@ -332,12 +834,251 @@ app.delete('/api/analytics/users/:id', requireAnalyticsAdmin, requireAnalyticsUs
     response.status(result.rowCount ? 204 : 404).end();
 });
 
+app.post('/api/admin/password-code/request', async (request, response) => {
+    const email = normalizeEmail(request.body?.email);
+    const purpose = request.body?.purpose === 'setup' ? 'setup' : 'reset';
+
+    if (
+        await rejectIfRateLimited(request, response, 'admin-code-request-ip', purpose, { limit: 12, windowMs: 60 * 60 * 1000 })
+        || await rejectIfRateLimited(request, response, 'admin-code-request-email', `${purpose}:${email}`, { limit: 3, windowMs: 60 * 60 * 1000 })
+    ) {
+        return;
+    }
+
+    if (!isValidEmail(email)) {
+        response.status(400).json({ error: 'Bitte eine gültige Mailadresse angeben.' });
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        const codeResult = await storeAuthCode({ email, purpose });
+        if (codeResult) {
+            await sendPasswordCode({ email, code: codeResult.code, purpose, setupToken: codeResult.setupToken });
+        }
+        response.status(202).json({ message: 'Wenn ein Profil zu dieser Mailadresse existiert, wurde ein Code versendet.' });
+    } catch (error) {
+        logError('Failed to request admin password code', error, { email, purpose });
+        response.status(500).json({ error: 'Code konnte nicht angefordert werden.' });
+    }
+});
+
+app.post('/api/admin/password-code/verify', async (request, response) => {
+    const email = normalizeEmail(request.body?.email);
+    const setupToken = typeof request.body?.setupToken === 'string' ? request.body.setupToken.trim() : '';
+    const code = typeof request.body?.code === 'string' ? request.body.code.trim() : '';
+    const purpose = setupToken ? (request.body?.purpose === 'reset' ? 'reset' : 'setup') : 'reset';
+
+    if (!isValidSetupToken(setupToken) || !/^\d{6}$/.test(code)) {
+        response.status(400).json({ error: 'Mailadresse oder Code ist ungültig.' });
+        return;
+    }
+    if (
+        await rejectIfRateLimited(request, response, 'admin-code-verify-ip', purpose, { limit: 30, windowMs: 15 * 60 * 1000 })
+        || await rejectIfRateLimited(request, response, 'admin-code-verify-subject', `${purpose}:${setupToken || email}`, { limit: 8, windowMs: 15 * 60 * 1000 })
+    ) {
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        if (setupToken) {
+            const setupUser = await findAuthUserByToken(setupToken, purpose);
+            if (!setupUser || !await verifyPassword(code, setupUser.auth_code_hash)) {
+                await registerFailedCodeAttempt(setupUser?.id);
+                response.status(400).json({ error: 'Der Code ist ungültig oder abgelaufen.' });
+                return;
+            }
+
+            response.json({ message: 'Code wurde bestätigt.' });
+            return;
+        }
+
+        const result = await pool.query(`
+            SELECT id, auth_code_hash, auth_code_attempts
+            FROM analytics_users
+            WHERE lower(email) = lower($1)
+              AND auth_code_purpose = 'reset'
+              AND auth_code_hash IS NOT NULL
+              AND auth_code_expires_at > now()
+        `, [email]);
+
+        if (result.rowCount !== 1 || result.rows[0].auth_code_attempts >= 5 || !await verifyPassword(code, result.rows[0].auth_code_hash)) {
+            await registerFailedCodeAttempt(result.rows[0]?.id);
+            response.status(400).json({ error: 'Der Code ist ungültig oder abgelaufen.' });
+            return;
+        }
+
+        response.json({ message: 'Code wurde bestätigt.' });
+    } catch (error) {
+        logError('Failed to verify admin password code', error, { email });
+        response.status(500).json({ error: 'Code konnte nicht geprüft werden.' });
+    }
+});
+
+app.post('/api/admin/password-code/complete', async (request, response) => {
+    const email = normalizeEmail(request.body?.email);
+    const setupToken = typeof request.body?.setupToken === 'string' ? request.body.setupToken.trim() : '';
+    const code = typeof request.body?.code === 'string' ? request.body.code.trim() : '';
+    const password = typeof request.body?.password === 'string' ? request.body.password : '';
+    const purpose = setupToken ? (request.body?.purpose === 'reset' ? 'reset' : 'setup') : 'reset';
+
+    if (!isValidSetupToken(setupToken) || !/^\d{6}$/.test(code) || password.length < 12 || password.length > 256) {
+        response.status(400).json({ error: 'Mailadresse, Code oder Passwort ist ungültig. Das Passwort muss mindestens 12 Zeichen lang sein.' });
+        return;
+    }
+    if (
+        await rejectIfRateLimited(request, response, 'admin-code-complete-ip', purpose, { limit: 30, windowMs: 15 * 60 * 1000 })
+        || await rejectIfRateLimited(request, response, 'admin-code-complete-subject', `${purpose}:${setupToken || email}`, { limit: 8, windowMs: 15 * 60 * 1000 })
+    ) {
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        if (setupToken) {
+            const setupUser = await findAuthUserByToken(setupToken, purpose);
+            if (!setupUser || setupUser.auth_code_attempts >= 5 || !await verifyPassword(code, setupUser.auth_code_hash)) {
+                await registerFailedCodeAttempt(setupUser?.id);
+                response.status(400).json({ error: 'Der Code ist ungültig oder abgelaufen.' });
+                return;
+            }
+            if (setupUser.password_hash && await verifyPassword(password, setupUser.password_hash)) {
+                response.status(400).json({ error: 'Das neue Passwort muss sich vom bisherigen Passwort unterscheiden.' });
+                return;
+            }
+
+            const passwordHash = await hashPassword(password);
+            await pool.query(`
+                UPDATE analytics_users
+                SET password_hash = $2,
+                    password_set_at = now(),
+                    auth_code_hash = NULL,
+                    auth_code_expires_at = NULL,
+                    auth_code_purpose = NULL,
+                    auth_code_sent_at = NULL,
+                    auth_link_token_hash = NULL,
+                    auth_link_token_lookup = NULL,
+                    auth_code_attempts = 0
+                WHERE id = $1
+            `, [setupUser.id, passwordHash]);
+            await pool.query('DELETE FROM analytics_sessions WHERE user_id = $1', [setupUser.id]);
+
+            await createAdminSession({
+                request,
+                response,
+                userId: setupUser.id,
+                username: setupUser.email,
+                permissions: normalizePermissions(setupUser.permissions),
+            });
+            response.json({ message: 'Passwort wurde gesetzt.', email: setupUser.email });
+            return;
+        }
+
+        const result = await pool.query(`
+            SELECT id, email, permissions, password_hash, auth_code_hash, auth_code_attempts
+            FROM analytics_users
+            WHERE lower(email) = lower($1)
+              AND auth_code_purpose = 'reset'
+              AND auth_code_hash IS NOT NULL
+              AND auth_code_expires_at > now()
+        `, [email]);
+
+        if (result.rowCount !== 1 || result.rows[0].auth_code_attempts >= 5 || !await verifyPassword(code, result.rows[0].auth_code_hash)) {
+            await registerFailedCodeAttempt(result.rows[0]?.id);
+            response.status(400).json({ error: 'Der Code ist ungültig oder abgelaufen.' });
+            return;
+        }
+        if (result.rows[0].password_hash && await verifyPassword(password, result.rows[0].password_hash)) {
+            response.status(400).json({ error: 'Das neue Passwort muss sich vom bisherigen Passwort unterscheiden.' });
+            return;
+        }
+
+        const passwordHash = await hashPassword(password);
+        await pool.query(`
+            UPDATE analytics_users
+            SET password_hash = $2,
+                password_set_at = now(),
+                auth_code_hash = NULL,
+                auth_code_expires_at = NULL,
+                auth_code_purpose = NULL,
+                auth_code_sent_at = NULL,
+                auth_link_token_hash = NULL,
+                auth_link_token_lookup = NULL,
+                auth_code_attempts = 0
+            WHERE id = $1
+        `, [result.rows[0].id, passwordHash]);
+        await pool.query('DELETE FROM analytics_sessions WHERE user_id = $1', [result.rows[0].id]);
+
+        await createAdminSession({
+            request,
+            response,
+            userId: result.rows[0].id,
+            username: result.rows[0].email ?? email,
+            permissions: normalizePermissions(result.rows[0].permissions),
+        });
+        response.json({ message: 'Passwort wurde gesetzt.', email: result.rows[0].email ?? email });
+    } catch (error) {
+        logError('Failed to complete admin password setup', error, { email });
+        response.status(500).json({ error: 'Passwort konnte nicht gesetzt werden.' });
+    }
+});
+
 app.get('/api/admin/me', requireAnalyticsAdmin, async (request, response) => {
     response.json({
         username: request.analyticsUser,
         permissions: request.analyticsPermissions ?? [],
         canManageUsers: request.analyticsPermissions?.includes('profile_management') ?? false,
+        canChangePassword: !request.analyticsIsBootstrapAdmin,
     });
+});
+
+app.post('/api/admin/password', requireAnalyticsAdmin, requireCsrfToken, async (request, response) => {
+    const currentPassword = typeof request.body?.currentPassword === 'string' ? request.body.currentPassword : '';
+    const newPassword = typeof request.body?.newPassword === 'string' ? request.body.newPassword : '';
+
+    if (await rejectIfRateLimited(request, response, 'admin-password-change', request.analyticsUser, { limit: 8, windowMs: 15 * 60 * 1000 })) {
+        return;
+    }
+    if (request.analyticsIsBootstrapAdmin) {
+        response.status(403).json({ error: 'Das Passwort des Hauptkontos wird über die Server-Konfiguration geändert.' });
+        return;
+    }
+    if (!request.analyticsUserId || !request.analyticsPasswordHash) {
+        response.status(401).json({ error: 'Anmeldung erforderlich.' });
+        return;
+    }
+    if (newPassword.length < 12 || newPassword.length > 256) {
+        response.status(400).json({ error: 'Das neue Passwort muss mindestens 12 Zeichen lang sein.' });
+        return;
+    }
+    if (!await verifyPassword(currentPassword, request.analyticsPasswordHash)) {
+        response.status(400).json({ error: 'Das aktuelle Passwort ist falsch.' });
+        return;
+    }
+    if (await verifyPassword(newPassword, request.analyticsPasswordHash)) {
+        response.status(400).json({ error: 'Das neue Passwort muss sich vom bisherigen Passwort unterscheiden.' });
+        return;
+    }
+
+    try {
+        const newPasswordHash = await hashPassword(newPassword);
+        await pool.query(`
+            UPDATE analytics_users
+            SET password_hash = $2,
+                password_set_at = now()
+            WHERE id = $1
+        `, [request.analyticsUserId, newPasswordHash]);
+        await pool.query(
+            'DELETE FROM analytics_sessions WHERE user_id = $1 AND token_lookup <> $2',
+            [request.analyticsUserId, request.analyticsSessionTokenLookup],
+        );
+
+        response.json({ message: 'Passwort wurde geändert.', email: request.analyticsUserEmail || request.analyticsUser });
+    } catch (error) {
+        logError('Failed to change admin password', error, { user: request.analyticsUser });
+        response.status(500).json({ error: 'Passwort konnte nicht geändert werden.' });
+    }
 });
 
 app.get('/api/analytics/summary', requireAnalyticsAdmin, requireAdminPermission('statistics', 'Keine Berechtigung für Statistiken.'), async (request, response) => {
@@ -542,7 +1283,7 @@ app.get('/api/admin/grave-text-roles', requireAnalyticsAdmin, requireAnyAdminPer
     }
 });
 
-app.post('/api/admin/grave-text-roles', requireAnalyticsAdmin, requireAdminPermission('grave_text_roles', 'Keine Berechtigung zur Rollenverwaltung.'), async (request, response) => {
+app.post('/api/admin/grave-text-roles', requireAnalyticsAdmin, requireCsrfToken, requireAdminPermission('grave_text_roles', 'Keine Berechtigung zur Rollenverwaltung.'), async (request, response) => {
     const name = normalizeRoleName(request.body);
 
     if (name.length < 1 || name.length > 120) {
@@ -568,7 +1309,7 @@ app.post('/api/admin/grave-text-roles', requireAnalyticsAdmin, requireAdminPermi
     }
 });
 
-app.put('/api/admin/grave-text-roles/:id', requireAnalyticsAdmin, requireAdminPermission('grave_text_roles', 'Keine Berechtigung zur Rollenverwaltung.'), async (request, response) => {
+app.put('/api/admin/grave-text-roles/:id', requireAnalyticsAdmin, requireCsrfToken, requireAdminPermission('grave_text_roles', 'Keine Berechtigung zur Rollenverwaltung.'), async (request, response) => {
     if (!/^\d+$/.test(request.params.id)) {
         response.status(400).json({ error: 'Ungültige Rollen-ID.' });
         return;
@@ -618,7 +1359,7 @@ app.put('/api/admin/grave-text-roles/:id', requireAnalyticsAdmin, requireAdminPe
     }
 });
 
-app.delete('/api/admin/grave-text-roles/:id', requireAnalyticsAdmin, requireAdminPermission('grave_text_roles', 'Keine Berechtigung zur Rollenverwaltung.'), async (request, response) => {
+app.delete('/api/admin/grave-text-roles/:id', requireAnalyticsAdmin, requireCsrfToken, requireAdminPermission('grave_text_roles', 'Keine Berechtigung zur Rollenverwaltung.'), async (request, response) => {
     if (!/^\d+$/.test(request.params.id)) {
         response.status(400).json({ error: 'Ungültige Rollen-ID.' });
         return;
@@ -723,7 +1464,7 @@ app.get('/api/admin/grave-texts', requireAnalyticsAdmin, requireAdminPermission(
     }
 });
 
-app.post('/api/admin/grave-texts', requireAnalyticsAdmin, requireAdminPermission('grave_texts', 'Keine Berechtigung für Grabtexte.'), async (request, response) => {
+app.post('/api/admin/grave-texts', requireAnalyticsAdmin, requireCsrfToken, requireAdminPermission('grave_texts', 'Keine Berechtigung für Grabtexte.'), async (request, response) => {
     const input = normalizeGraveTextInput(request.body);
     const validationError = validateGraveTextInput(input, { requireGraveId: true });
 
@@ -755,7 +1496,7 @@ app.post('/api/admin/grave-texts', requireAnalyticsAdmin, requireAdminPermission
     }
 });
 
-app.put('/api/admin/grave-texts/:id', requireAnalyticsAdmin, requireAdminPermission('grave_texts', 'Keine Berechtigung für Grabtexte.'), async (request, response) => {
+app.put('/api/admin/grave-texts/:id', requireAnalyticsAdmin, requireCsrfToken, requireAdminPermission('grave_texts', 'Keine Berechtigung für Grabtexte.'), async (request, response) => {
     if (!/^\d+$/.test(request.params.id)) {
         response.status(400).json({ error: 'Ungültige Text-ID.' });
         return;
@@ -795,7 +1536,7 @@ app.put('/api/admin/grave-texts/:id', requireAnalyticsAdmin, requireAdminPermiss
     }
 });
 
-app.delete('/api/admin/grave-texts/:id', requireAnalyticsAdmin, requireAdminPermission('grave_texts', 'Keine Berechtigung für Grabtexte.'), async (request, response) => {
+app.delete('/api/admin/grave-texts/:id', requireAnalyticsAdmin, requireCsrfToken, requireAdminPermission('grave_texts', 'Keine Berechtigung für Grabtexte.'), async (request, response) => {
     if (!/^\d+$/.test(request.params.id)) {
         response.status(400).json({ error: 'Ungültige Text-ID.' });
         return;
@@ -836,7 +1577,7 @@ app.get('/api/admin/data-import', requireAnalyticsAdmin, requireAdminPermission(
     response.json(serializeImportStatus());
 });
 
-app.post('/api/admin/data-import', requireAnalyticsAdmin, requireAdminPermission('data_import', 'Keine Berechtigung für Datenimporte.'), async (request, response) => {
+app.post('/api/admin/data-import', requireAnalyticsAdmin, requireCsrfToken, requireAdminPermission('data_import', 'Keine Berechtigung für Datenimporte.'), async (request, response) => {
     if (currentImport) {
         response.status(409).json({ error: 'Es läuft bereits ein Import.', status: serializeImportStatus() });
         return;
@@ -1285,19 +2026,25 @@ app.get('/api/graves', async (request, response) => {
         logError('Failed to load graves', error, {
             queryKeys: Object.keys(request.query),
         });
-        response.status(500).json({ error: 'Grabstellen konnten nicht geladen werden.', details: error.message });
+        response.status(500).json({ error: 'Grabstellen konnten nicht geladen werden.' });
     }
 });
 
 app.get('/api/graves/:id', async (request, response) => {
+    const burialId = String(request.params.id ?? '');
+    if (!/^\d+$/.test(burialId)) {
+        response.status(400).json({ error: 'Ungültige Grab-ID.' });
+        return;
+    }
+
     try {
-        logInfo('Loading grave detail', { id: request.params.id });
+        logInfo('Loading grave detail', { id: burialId });
         await ensureAnalyticsTable();
 
-        const result = await pool.query(`${baseQuery} WHERE b.id = $1 LIMIT 1`, [request.params.id]);
+        const result = await pool.query(`${baseQuery} WHERE b.id = $1 LIMIT 1`, [burialId]);
 
         if (result.rowCount === 0) {
-            logInfo('Grave detail not found', { id: request.params.id });
+            logInfo('Grave detail not found', { id: burialId });
             response.status(404).json({ error: 'Grabstelle nicht gefunden.' });
             return;
         }
@@ -1307,19 +2054,19 @@ app.get('/api/graves/:id', async (request, response) => {
             FROM grave_texts
             WHERE burial_id = $1
             ORDER BY text_date DESC, id DESC
-        `, [request.params.id]);
+        `, [burialId]);
         const grave = {
             ...mapRowToGrave(result.rows[0]),
             graveTexts: graveTextResult.rows.map(mapRowToGraveText),
         };
 
-        logInfo('Loaded grave detail', { id: request.params.id, graveTexts: grave.graveTexts.length });
+        logInfo('Loaded grave detail', { id: burialId, graveTexts: grave.graveTexts.length });
         response.json(grave);
     } catch (error) {
         logError('Failed to load grave detail', error, {
-            id: request.params.id,
+            id: burialId,
         });
-        response.status(500).json({ error: 'Grabstelle konnte nicht geladen werden.', details: error.message });
+        response.status(500).json({ error: 'Grabstelle konnte nicht geladen werden.' });
     }
 });
 

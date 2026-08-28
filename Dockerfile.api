@@ -23,4 +23,6 @@ COPY submodules/grave-db/data ./grave-db/data
 
 EXPOSE 3001
 
+USER node
+
 CMD ["node", "server/index.mjs"]

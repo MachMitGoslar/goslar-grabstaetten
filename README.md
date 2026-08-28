@@ -11,7 +11,7 @@ Mobile-first React-Webapp mit Node/PostgreSQL-API für Grabstellensuche, Friedho
 - Filtermodal für Geburtsdatum, Todesdatum, Friedhof, Vorname, Nachname und Geburtsname
 - Kalenderfilter mit Jahr-, Monat- und Tagesauswahl, da historische Daten nicht immer taggenau vorliegen
 - Detailansicht pro Grabstelle mit Friedhofsbild, Beschreibung, Lebensdaten und Navigationslink
-- Leaflet/OpenStreetMap-Karte in der Detailansicht mit hellem CARTO-Kartenstil
+- Leaflet/OpenStreetMap-Karte in der Detailansicht
 - Geotour-Seite mit eingebetteter externer Website und Geolocation-Freigabe für das iframe
 - Responsive Layout für Mobile, Tablet und Desktop
 
@@ -41,7 +41,7 @@ Die Vite-App proxyt `/api` automatisch an `http://localhost:3001`.
 
 ## Docker/Plesk Deployment
 
-Das Docker-Setup veröffentlicht nur einen Gateway-Container nach außen. Intern laufen React, Angular-Tour, API und PostgreSQL getrennt.
+Das Docker-Setup veröffentlicht im normalen Webbetrieb nur den Gateway-Container nach außen. Intern laufen React, Angular-Tour, API, PostgreSQL und optional der Mailserver getrennt. In Production veröffentlicht der Mailserver zusätzlich die SMTP-/Submission-/IMAPS-Ports.
 
 Zielrouten:
 
@@ -49,17 +49,22 @@ Zielrouten:
 https://friedhof.goslar.de/       -> React-App
 https://friedhof.goslar.de/tour/  -> Angular Cemetery Tour
 https://friedhof.goslar.de/api/   -> Node/Express-API
+mail.friedhof.goslar.de:25        -> Mailserver SMTP
+mail.friedhof.goslar.de:587       -> Mailserver Submission
+mail.friedhof.goslar.de:993       -> Mailserver IMAPS
 ```
 
 Dateien:
 
 ```text
-docker-compose.yml          Compose-Setup für Gateway, React, Tour, API und DB
+docker-compose.yml          Compose-Setup für Development: Gateway, React, Tour, API, DB und optional Mailserver
+docker-compose.production.yml Compose-Setup für Production: veröffentlichte Images, DB und Mailserver
 Dockerfile.web              Production-Build der React-App
 Dockerfile.api              Production-Container für die Express-API
 submodules/cemetery-tour/   Angular-Tour inkl. Dockerfile
 submodules/grave-db/        PostgreSQL-Schema, Excel-Daten und Importer
 docker/nginx/default.conf   Reverse Proxy für /, /tour/ und /api/
+docker-data/dms/            Persistente Mailserver-Daten und docker-mailserver-Konfiguration, nicht im Git
 ```
 
 Konfiguration vorbereiten:
@@ -93,6 +98,9 @@ CEMETERY_TOUR_CONTEXT=./submodules/cemetery-tour
 CEMETERY_TOUR_DOCKERFILE=Dockerfile
 CEMETERY_TOUR_BUILD_COMMAND=npm run build -- --base-href /tour/ --deploy-url /tour/
 CEMETERY_TOUR_DIST_DIR=www
+SMTP_HOST=mailserver
+SMTP_PORT=25
+SMTP_FROM=no-reply@friedhof.test
 ```
 
 `GRAVE_DB_CONTEXT` zeigt standardmäßig auf das `grave-db`-Submodule. Der DB-Dockerfile basiert auf PostgreSQL und legt das Schema beim ersten Start eines leeren Volumes an. Der Importer-Dockerfile baut einen separaten Python-Container für den Excel-Import.
@@ -105,12 +113,98 @@ Start:
 docker compose up -d --build
 ```
 
+Development startet den internen Mailserver zusammen mit der Plattform. Es werden keine Mail-Ports auf dem Host veröffentlicht; die API sendet intern über `mailserver:25`.
+
+Nur den Development-Mailserver separat starten:
+
+```bash
+docker compose up -d mailserver
+```
+
+Development-SMTP:
+
+```text
+SMTP_HOST=mailserver
+SMTP_PORT=25
+SMTP_FROM=no-reply@friedhof.test
+SMTP_SECURE=false
+```
+
+Development-Webmail:
+
+```text
+http://127.0.0.1:8081
+```
+
+Login erfolgt mit der vollständigen Mailadresse, z. B. `no-reply@friedhof.test` oder `test@friedhof.test`.
+
+Das lokale Development-Postfach wird einmalig im Mailserver angelegt:
+
+```bash
+docker compose exec mailserver setup email add no-reply@friedhof.test '<passwort>'
+docker compose exec mailserver setup email add test@friedhof.test '<passwort>'
+docker compose restart mailserver
+```
+
 Production-Start mit GHCR-Images:
 
 ```bash
 cp .env.production.example .env
+# Danach in .env mindestens POSTGRES_PASSWORD, ANALYTICS_ADMIN_PASSWORD und IMAGE_TAG setzen.
 docker compose -f docker-compose.production.yml pull
 docker compose -f docker-compose.production.yml up -d
+```
+
+Live-Konfiguration für `friedhof.goslar.de`:
+
+```text
+PUBLIC_BASE_URL=https://friedhof.goslar.de
+FORCE_SECURE_COOKIES=true
+MAILSERVER_HOSTNAME=mail.friedhof.goslar.de
+MAILSERVER_DOMAINNAME=friedhof.goslar.de
+SMTP_FROM=no-reply@friedhof.goslar.de
+SMTP_HOST=mailserver
+SMTP_PORT=25
+SMTP_SECURE=false
+```
+
+Für den Live-Betrieb müssen `POSTGRES_PASSWORD` und `ANALYTICS_ADMIN_PASSWORD` starke, zufällige Werte sein. `IMAGE_TAG=latest` ist für schnelle Tests möglich; für nachvollziehbare Deployments sollte ein Release-Tag oder `sha-...`-Tag verwendet werden.
+
+Production-Mailserver:
+
+```text
+MAILSERVER_HOSTNAME=mail.friedhof.goslar.de
+MAILSERVER_DOMAINNAME=friedhof.goslar.de
+SMTP_HOST=mailserver
+SMTP_PORT=25
+SMTP_FROM=no-reply@friedhof.goslar.de
+LETSENCRYPT_PATH=/etc/letsencrypt
+```
+
+Alle Plattform-Mails, z. B. Admin-Ersteinrichtung und Passwort-zurücksetzen, laufen über den internen Mailserver. Die API nutzt dafür `mailserver:25` innerhalb des Docker-Netzwerks und setzt als Absender die konfigurierte `SMTP_FROM`-Adresse, z. B. `no-reply@friedhof.goslar.de`.
+
+Der Production-Mailserver nutzt `ghcr.io/docker-mailserver/docker-mailserver:latest`, persistiert Daten unter `./docker-data/dms/` und bindet nach außen standardmäßig:
+
+- `25` SMTP
+- `587` Submission
+- `993` IMAPS
+
+SpamAssassin und ClamAV sind standardmäßig deaktiviert, um RAM zu sparen. Fail2ban ist in Production aktiviert.
+
+DNS-/Betriebsanforderungen für Production:
+
+- `A`/`AAAA` Record für `friedhof.goslar.de` auf den Webserver
+- `A`/`AAAA` Record für `mail.friedhof.goslar.de` auf den Mailserver
+- `MX` Record für `friedhof.goslar.de` auf `mail.friedhof.goslar.de`
+- gültiges Let's-Encrypt-Zertifikat unter `${LETSENCRYPT_PATH}` für den Mail-Host
+- SPF, DKIM und DMARC für zuverlässige Zustellung
+- Mailboxen/Accounts in `docker-data/dms/config/`
+
+Das `no-reply`-Postfach muss vor bzw. direkt nach dem ersten Start angelegt werden, sonst beendet docker-mailserver Dovecot wieder:
+
+```bash
+docker compose -f docker-compose.production.yml exec mailserver setup email add no-reply@friedhof.goslar.de '<starkes-passwort>'
+docker compose -f docker-compose.production.yml restart mailserver
 ```
 
 Die Production-Datei nutzt veröffentlichte Images aus der GitHub Container Registry:

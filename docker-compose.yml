@@ -39,9 +39,56 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-grave}:${POSTGRES_PASSWORD:-grave}@db:5432/${POSTGRES_DB:-gravedb}
       ANALYTICS_ADMIN_USER: ${ANALYTICS_ADMIN_USER:-admin}
       ANALYTICS_ADMIN_PASSWORD: ${ANALYTICS_ADMIN_PASSWORD:-change-me-dev}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:${HTTP_PORT:-8080}}
+      FORCE_SECURE_COOKIES: ${FORCE_SECURE_COOKIES:-false}
+      SMTP_HOST: ${SMTP_HOST:-mailserver}
+      SMTP_PORT: ${SMTP_PORT:-25}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-no-reply@friedhof.test}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
     depends_on:
       db:
         condition: service_healthy
+      mailserver:
+        condition: service_started
+    restart: unless-stopped
+
+  mailserver:
+    image: ghcr.io/docker-mailserver/docker-mailserver:latest
+    container_name: ${MAILSERVER_CONTAINER_NAME:-friedhof-mailserver-dev}
+    hostname: ${MAILSERVER_HOSTNAME:-mail.friedhof.test}
+    domainname: ${MAILSERVER_DOMAINNAME:-friedhof.test}
+    expose:
+      - "25"
+      - "587"
+      - "993"
+    volumes:
+      - dms_mail_data:/var/mail/
+      - dms_mail_state:/var/mail-state/
+      - dms_mail_logs:/var/log/mail/
+      - ./docker-data/dms/config/:/tmp/docker-mailserver/
+    environment:
+      ENABLE_SPAMASSASSIN: ${MAILSERVER_ENABLE_SPAMASSASSIN:-0}
+      ENABLE_CLAMAV: ${MAILSERVER_ENABLE_CLAMAV:-0}
+      ENABLE_FAIL2BAN: ${MAILSERVER_ENABLE_FAIL2BAN:-0}
+      LOG_LEVEL: ${MAILSERVER_LOG_LEVEL:-info}
+      PERMIT_DOCKER: ${MAILSERVER_PERMIT_DOCKER:-network}
+      SSL_TYPE: ${MAILSERVER_SSL_TYPE:-}
+    restart: unless-stopped
+
+  webmail:
+    image: roundcube/roundcubemail:latest
+    container_name: ${WEBMAIL_CONTAINER_NAME:-friedhof-webmail-dev}
+    depends_on:
+      - mailserver
+    ports:
+      - "127.0.0.1:${WEBMAIL_PORT:-8081}:80"
+    environment:
+      ROUNDCUBEMAIL_DEFAULT_HOST: mailserver
+      ROUNDCUBEMAIL_DEFAULT_PORT: 143
+      ROUNDCUBEMAIL_SMTP_SERVER: mailserver
+      ROUNDCUBEMAIL_SMTP_PORT: 25
     restart: unless-stopped
 
   db:
@@ -79,3 +126,7 @@ services:
 
 volumes:
   postgres_data:
+  dms_mail_data:
+  dms_mail_state:
+  dms_mail_logs:
+  webmail_data:

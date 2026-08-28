@@ -1,7 +1,8 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Seo } from '../components/Seo.tsx';
-import { analyticsApiBaseUrl as apiBaseUrl, analyticsCredentialsKey as credentialsKey } from '../analytics/adminAuth.ts';
+import { analyticsApiBaseUrl as apiBaseUrl, analyticsCredentialsKey as credentialsKey, clearAnalyticsSession, getAnalyticsAuthHeaders, logoutAdmin } from '../analytics/adminAuth.ts';
+import { AdminLoginForm } from '../components/AdminLoginForm.tsx';
 import './Analytics.css';
 
 type Metric = { label: string; value: number };
@@ -23,9 +24,6 @@ type AnalyticsSummary = {
     quality: { lastEventAt: string | null; legacyEvents: number };
     canManageUsers: boolean;
 };
-
-const encodeCredentials = (user: string, password: string) =>
-    btoa(String.fromCharCode(...new TextEncoder().encode(`${user}:${password}`)));
 
 const MetricBars = ({ items }: { items: Metric[] }) => {
     const maximum = Math.max(...items.map((item) => item.value), 1);
@@ -60,7 +58,7 @@ const KpiCard = ({ value, label, definition }: {
 const formatDateLabel = (label: string) => new Date(label).toLocaleDateString('de-DE');
 
 export const AnalyticsPage = () => {
-    const [credentials, setCredentials] = useState(() => sessionStorage.getItem(credentialsKey) ?? '');
+    const [credentials, setCredentials] = useState('');
     const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
     const [days, setDays] = useState(30);
     const [error, setError] = useState('');
@@ -72,14 +70,15 @@ export const AnalyticsPage = () => {
 
         try {
             const result = await fetch(`${apiBaseUrl}/api/analytics/summary?days=${period}`, {
-                headers: { Authorization: `Basic ${authorization}` },
+                credentials: 'include',
+                headers: getAnalyticsAuthHeaders(authorization),
             });
 
             if (result.status === 401) {
-                sessionStorage.removeItem(credentialsKey);
+                clearAnalyticsSession();
                 setCredentials('');
                 setSummary(null);
-                setError('Benutzername oder Passwort ist falsch.');
+                setError('Mailadresse oder Passwort ist falsch.');
                 return;
             }
 
@@ -93,18 +92,25 @@ export const AnalyticsPage = () => {
     }, []);
 
     useEffect(() => {
+        const timer = window.setTimeout(() => setCredentials(sessionStorage.getItem(credentialsKey) ?? '1'), 0);
+        return () => window.clearTimeout(timer);
+    }, []);
+
+    useEffect(() => {
         if (!credentials) return;
 
         const timer = window.setTimeout(() => void loadSummary(credentials, days), 0);
         return () => window.clearTimeout(timer);
     }, [credentials, days, loadSummary]);
 
-    const login = (event: FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
-        const form = new FormData(event.currentTarget);
-        const encoded = encodeCredentials(String(form.get('user')), String(form.get('password')));
-        sessionStorage.setItem(credentialsKey, encoded);
-        setCredentials(encoded);
+    const login = () => {
+        setCredentials(sessionStorage.getItem(credentialsKey) ?? '1');
+    };
+
+    const logout = async () => {
+        await logoutAdmin();
+        setCredentials('');
+        setSummary(null);
     };
 
     return (
@@ -113,21 +119,20 @@ export const AnalyticsPage = () => {
             <header className="analytics-header">
                 <div><p>Administration</p><h1>Nutzungsstatistik</h1></div>
                 {credentials && <div className="analytics-header-actions">
-                    <Link to="/admin">Admin-Plattform</Link>
-                    {summary?.canManageUsers && <Link to="/admin/profile">Profile</Link>}
-                    <button type="button" onClick={() => {
-                    sessionStorage.removeItem(credentialsKey); setCredentials(''); setSummary(null);
-                    }}>Abmelden</button>
+                    <nav className="analytics-main-nav" aria-label="Admin-Hauptbereiche">
+                        <Link to="/admin">Grabtexte</Link>
+                        <Link to="/admin/statistik" aria-current="page">Statistik</Link>
+                        {summary?.canManageUsers && <Link to="/admin/profile">Profile</Link>}
+                    </nav>
+                    <div className="analytics-account-actions" aria-label="Konto">
+                        <Link to="/admin/passwort">Passwort</Link>
+                        <button type="button" onClick={() => void logout()}>Abmelden</button>
+                    </div>
                 </div>}
             </header>
 
             {!credentials ? (
-                <form className="analytics-login" onSubmit={login}>
-                    <h2>Anmelden</h2>
-                    <label>Benutzername<input name="user" autoComplete="username" required /></label>
-                    <label>Passwort<input name="password" type="password" autoComplete="current-password" required /></label>
-                    <button type="submit">Statistik öffnen</button>
-                </form>
+                <AdminLoginForm title="Anmelden" submitLabel="Statistik öffnen" onLogin={login} />
             ) : (
                 <>
                     <div className="analytics-toolbar">
@@ -152,11 +157,6 @@ export const AnalyticsPage = () => {
                                 label: formatDateLabel(item.label),
                                 value: item.visitors,
                             }))} />
-                            {summary.quality.legacyEvents > 0 && (
-                                <p className="analytics-funnel-note">
-                                    Hinweis: {summary.quality.legacyEvents} ältere Seitenaufrufe enthalten noch keine Besucherkennung und werden nicht als eindeutige Besucher gezählt.
-                                </p>
-                            )}
                         </section>
                         <section>
                             <h2>Grabstellendetails pro Tag</h2>

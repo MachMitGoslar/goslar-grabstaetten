@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { analyticsApiBaseUrl as apiBaseUrl, analyticsCredentialsKey as credentialsKey, getAnalyticsAuthHeaders } from '../analytics/adminAuth.ts';
+import { analyticsApiBaseUrl as apiBaseUrl, analyticsCredentialsKey as credentialsKey, clearAnalyticsSession, getAnalyticsAuthHeaders, logoutAdmin } from '../analytics/adminAuth.ts';
+import { AdminLoginForm } from '../components/AdminLoginForm.tsx';
 import { GraveCard } from '../components/GraveCard.tsx';
 import { Seo } from '../components/Seo.tsx';
 import { fetchGravesPage, type GraveRecord } from '../data/graveData.ts';
@@ -59,9 +60,6 @@ const emptyForm = (): GraveTextFormState => ({
     role: fallbackAuthorRoles[0],
     date: formatDateForInput(new Date().toISOString().slice(0, 10)),
 });
-
-const encodeCredentials = (user: string, password: string) =>
-    btoa(String.fromCharCode(...new TextEncoder().encode(`${user}:${password}`)));
 
 export const AdminPage = () => {
     const [credentials, setCredentials] = useState('');
@@ -125,14 +123,15 @@ export const AdminPage = () => {
         try {
             const params = new URLSearchParams({ graveId });
             const result = await fetch(`${apiBaseUrl}/api/admin/grave-texts?${params.toString()}`, {
+                credentials: 'include',
                 headers: getAnalyticsAuthHeaders(authorization),
             });
 
             if (result.status === 401) {
-                sessionStorage.removeItem(credentialsKey);
+                clearAnalyticsSession();
                 setCredentials('');
                 setGraveTexts([]);
-                setError('Benutzername oder Passwort ist falsch.');
+                setError('Mailadresse oder Passwort ist falsch.');
                 return;
             }
 
@@ -158,14 +157,15 @@ export const AdminPage = () => {
 
         try {
             const result = await fetch(`${apiBaseUrl}/api/admin/grave-text-roles`, {
+                credentials: 'include',
                 headers: getAnalyticsAuthHeaders(authorization),
             });
 
             if (result.status === 401) {
-                sessionStorage.removeItem(credentialsKey);
+                clearAnalyticsSession();
                 setCredentials('');
                 setRoles([]);
-                setError('Benutzername oder Passwort ist falsch.');
+                setError('Mailadresse oder Passwort ist falsch.');
                 return;
             }
 
@@ -188,11 +188,12 @@ export const AdminPage = () => {
         setPermissionsFailed(false);
         try {
             const result = await fetch(`${apiBaseUrl}/api/admin/me`, {
+                credentials: 'include',
                 headers: getAnalyticsAuthHeaders(authorization),
             });
 
             if (result.status === 401) {
-                sessionStorage.removeItem(credentialsKey);
+                clearAnalyticsSession();
                 setCredentials('');
                 setPermissions([]);
                 return;
@@ -221,6 +222,7 @@ export const AdminPage = () => {
 
         try {
             const result = await fetch(`${apiBaseUrl}/api/admin/data-import`, {
+                credentials: 'include',
                 headers: getAnalyticsAuthHeaders(authorization),
             });
             if (!result.ok) throw new Error(`HTTP ${result.status}`);
@@ -231,7 +233,7 @@ export const AdminPage = () => {
     }, [canStartDataImport, credentials]);
 
     useEffect(() => {
-        const timer = window.setTimeout(() => setCredentials(sessionStorage.getItem(credentialsKey) ?? ''), 0);
+        const timer = window.setTimeout(() => setCredentials(sessionStorage.getItem(credentialsKey) ?? '1'), 0);
         return () => window.clearTimeout(timer);
     }, []);
 
@@ -271,18 +273,14 @@ export const AdminPage = () => {
         return () => window.clearInterval(interval);
     }, [canStartDataImport, credentials, importStatus?.running, loadImportStatus]);
 
-    const login = (event: FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
-        const form = new FormData(event.currentTarget);
-        const encoded = encodeCredentials(String(form.get('user')), String(form.get('password')));
-        sessionStorage.setItem(credentialsKey, encoded);
+    const login = () => {
         setHasLoadedPermissions(false);
         setIsLoadingPermissions(true);
-        setCredentials(encoded);
+        setCredentials(sessionStorage.getItem(credentialsKey) ?? '1');
     };
 
-    const logout = () => {
-        sessionStorage.removeItem(credentialsKey);
+    const logout = async () => {
+        await logoutAdmin();
         setCredentials('');
         setGraves([]);
         setNextGravesOffset(null);
@@ -323,6 +321,7 @@ export const AdminPage = () => {
             const isEdit = Boolean(formState.id);
             const result = await fetch(`${apiBaseUrl}/api/admin/grave-texts${isEdit ? `/${formState.id}` : ''}`, {
                 method: isEdit ? 'PUT' : 'POST',
+                credentials: 'include',
                 headers: {
                     ...getAnalyticsAuthHeaders(credentials),
                     'Content-Type': 'application/json',
@@ -372,6 +371,7 @@ export const AdminPage = () => {
             const isEdit = Boolean(roleFormState.id);
             const result = await fetch(`${apiBaseUrl}/api/admin/grave-text-roles${isEdit ? `/${roleFormState.id}` : ''}`, {
                 method: isEdit ? 'PUT' : 'POST',
+                credentials: 'include',
                 headers: {
                     ...getAnalyticsAuthHeaders(credentials),
                     'Content-Type': 'application/json',
@@ -408,6 +408,7 @@ export const AdminPage = () => {
         try {
             const result = await fetch(`${apiBaseUrl}/api/admin/grave-text-roles/${role.id}`, {
                 method: 'DELETE',
+                credentials: 'include',
                 headers: getAnalyticsAuthHeaders(credentials),
             });
 
@@ -432,6 +433,7 @@ export const AdminPage = () => {
         try {
             const result = await fetch(`${apiBaseUrl}/api/admin/grave-texts/${graveText.id}`, {
                 method: 'DELETE',
+                credentials: 'include',
                 headers: getAnalyticsAuthHeaders(credentials),
             });
 
@@ -458,6 +460,7 @@ export const AdminPage = () => {
         try {
             const result = await fetch(`${apiBaseUrl}/api/admin/data-import`, {
                 method: 'POST',
+                credentials: 'include',
                 headers: getAnalyticsAuthHeaders(credentials),
             });
 
@@ -473,6 +476,111 @@ export const AdminPage = () => {
         }
     };
 
+    const renderEditorContent = () => selectedGrave ? (
+        <>
+            <div className="admin-selected-grave">
+                <div>
+                    <span>Ausgewählte Grabstelle</span>
+                    <h2>{selectedGrave.displayLastName}, {selectedGrave.firstName}</h2>
+                    <p>{selectedGrave.cemetery}</p>
+                </div>
+                <button
+                    type="button"
+                    className="admin-editor-close"
+                    aria-label="Bearbeitungsfenster schließen"
+                    onClick={() => {
+                        setSelectedGrave(null);
+                        setFormState(emptyForm());
+                        setGraveTexts([]);
+                    }}
+                >
+                    ×
+                </button>
+            </div>
+
+            <form className="admin-form" onSubmit={saveGraveText}>
+                <h3>{formState.id ? 'Text bearbeiten' : 'Neuen Text hinzufügen'}</h3>
+                <label>
+                    Verfasst von
+                    <select
+                        value={formState.role}
+                        required
+                        onChange={(event) => setFormState((state) => ({ ...state, role: event.target.value }))}
+                    >
+                        {(roles.length ? roles.map((role) => role.name) : fallbackAuthorRoles)
+                            .map((role) => <option key={role} value={role}>{role}</option>)}
+                    </select>
+                </label>
+                <label>
+                    Datum
+                    <input
+                        value={formState.date}
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="TT.MM.JJJJ"
+                        required
+                        onChange={(event) => setFormState((state) => ({ ...state, date: event.target.value }))}
+                    />
+                </label>
+                <label className="admin-form-wide">
+                    Text
+                    <textarea
+                        value={formState.text}
+                        maxLength={5000}
+                        required
+                        rows={9}
+                        placeholder="Text eingeben, der später auf der Grabdetailseite angezeigt wird."
+                        onChange={(event) => setFormState((state) => ({ ...state, text: event.target.value }))}
+                    />
+                </label>
+                <div className="admin-form-actions">
+                    <button type="submit">{formState.id ? 'Speichern' : 'Hinzufügen'}</button>
+                    {formState.id && (
+                        <button type="button" className="admin-secondary" onClick={() => setFormState(emptyForm())}>
+                            Abbrechen
+                        </button>
+                    )}
+                </div>
+            </form>
+
+            <div className="admin-text-section">
+                <h3>Vorhandene Texte</h3>
+                {isLoadingTexts ? <p>Lade Texte …</p> : (
+                    <div className="admin-text-list">
+                        {graveTexts.length === 0 ? (
+                            <p className="analytics-empty">Für diese Grabstelle sind noch keine Texte hinterlegt.</p>
+                        ) : graveTexts.map((graveText) => (
+                            <article key={graveText.id} className="admin-text-item">
+                                <header>
+                                    <div>
+                                        <strong>{graveText.role}</strong>
+                                        <span>{formatDate(graveText.date)}</span>
+                                    </div>
+                                </header>
+                                <p>{graveText.text}</p>
+                                <footer>
+                                    <small>
+                                        Angelegt von {graveText.createdBy}
+                                        {graveText.updatedBy ? ` · geändert von ${graveText.updatedBy}` : ''}
+                                    </small>
+                                    <span>
+                                        <button type="button" className="admin-secondary" onClick={() => editGraveText(graveText)}>Bearbeiten</button>
+                                        <button type="button" className="analytics-delete" onClick={() => void deleteGraveText(graveText)}>Löschen</button>
+                                    </span>
+                                </footer>
+                            </article>
+                        ))}
+                    </div>
+                )}
+            </div>
+        </>
+    ) : (
+        <div className="admin-empty-selection">
+            <h2>Keine Grabstelle ausgewählt</h2>
+            <p>Suche links nach einer Grabstelle und wähle sie aus, um Texte zu bearbeiten.</p>
+        </div>
+    );
+
     return (
         <main className="analytics-page admin-page">
             <Seo title="Admin-Plattform" description="Geschützte Admin-Plattform für Grabtexte" path="/admin" />
@@ -484,22 +592,21 @@ export const AdminPage = () => {
                 </div>
                 {credentials && (
                     <div className="analytics-header-actions">
-                        {canManageRoles && <button type="button" className="analytics-header-link-button" onClick={() => setIsRoleDialogOpen(true)}>Rollen bearbeiten</button>}
-                        {canStartDataImport && <button type="button" className="analytics-header-link-button" onClick={() => void startDataImport()}>Daten importieren</button>}
-                        {permissions.includes('statistics') && <Link to="/admin/statistik">Statistik</Link>}
-                        {permissions.includes('profile_management') && <Link to="/admin/profile">Profile</Link>}
-                        <button type="button" onClick={logout}>Abmelden</button>
+                        <nav className="analytics-main-nav" aria-label="Admin-Hauptbereiche">
+                            <Link to="/admin" aria-current="page">Grabtexte</Link>
+                            {permissions.includes('statistics') && <Link to="/admin/statistik">Statistik</Link>}
+                            {permissions.includes('profile_management') && <Link to="/admin/profile">Profile</Link>}
+                        </nav>
+                        <div className="analytics-account-actions" aria-label="Konto">
+                            <Link to="/admin/passwort">Passwort</Link>
+                            <button type="button" onClick={() => void logout()}>Abmelden</button>
+                        </div>
                     </div>
                 )}
             </header>
 
             {!credentials ? (
-                <form className="analytics-login" onSubmit={login}>
-                    <h2>Anmelden</h2>
-                    <label>Benutzername<input name="user" autoComplete="username" required /></label>
-                    <label>Passwort<input name="password" type="password" autoComplete="current-password" required /></label>
-                    <button type="submit">Admin-Plattform öffnen</button>
-                </form>
+                <AdminLoginForm title="Anmelden" submitLabel="Admin-Plattform öffnen" onLogin={login} />
             ) : isLoadingPermissions || !hasLoadedPermissions ? (
                 <section className="admin-card admin-no-permission">
                     <h2>Berechtigungen werden geladen</h2>
@@ -511,11 +618,24 @@ export const AdminPage = () => {
                     <p>Bitte API-Server neu starten bzw. Backend-Container neu bauen und danach neu anmelden.</p>
                 </section>
             ) : (
-                canEditGraveTexts ? <div className="admin-workspace">
+                canEditGraveTexts ? <>
+                    {(canManageRoles || canStartDataImport) && (
+                        <section className="admin-action-bar" aria-label="Admin-Aktionen">
+                            <div>
+                                <strong>Werkzeuge</strong>
+                                <span>Aktionen für diese Plattform</span>
+                            </div>
+                            <div>
+                                {canManageRoles && <button type="button" className="analytics-header-link-button" onClick={() => setIsRoleDialogOpen(true)}>Rollen bearbeiten</button>}
+                                {canStartDataImport && <button type="button" className="analytics-header-link-button" onClick={() => void startDataImport()}>Daten importieren</button>}
+                            </div>
+                        </section>
+                    )}
+                    <div className="admin-workspace">
                     <section className="admin-card admin-search-panel">
                         <div className="admin-panel-heading">
                             <h2>Grabstelle suchen</h2>
-                            <p>Wähle ein Grab aus. Danach kannst du rechts die dazugehörigen Texte verwalten.</p>
+                            <p>Wähle ein Grab aus. Danach kannst du die dazugehörigen Texte verwalten.</p>
                         </div>
                         <label className="admin-search-field" aria-label="Grabstelle suchen">
                             <input
@@ -532,16 +652,27 @@ export const AdminPage = () => {
                                 ) : (
                                     <>
                                         {graves.map((grave) => (
-                                            <GraveCard
-                                                key={grave.id}
-                                                firstName={grave.firstName}
-                                                lastName={grave.displayLastName}
-                                                birthDate={grave.birthDate}
-                                                deathDate={grave.deathDate}
-                                                cemetery={grave.cemetery}
-                                                selected={selectedGrave?.id === grave.id}
-                                                onClick={() => selectGrave(grave)}
-                                            />
+                                            <div key={grave.id} className="admin-grave-list-entry">
+                                                <GraveCard
+                                                    firstName={grave.firstName}
+                                                    lastName={grave.displayLastName}
+                                                    birthDate={grave.birthDate}
+                                                    deathDate={grave.deathDate}
+                                                    cemetery={grave.cemetery}
+                                                    selected={selectedGrave?.id === grave.id}
+                                                    onClick={() => selectGrave(grave)}
+                                                />
+                                                {selectedGrave?.id === grave.id && (
+                                                    <section
+                                                        className="admin-card admin-editor-panel admin-editor-panel--inline"
+                                                        role="dialog"
+                                                        aria-modal="true"
+                                                        aria-label="Grabtexte bearbeiten"
+                                                    >
+                                                        {renderEditorContent()}
+                                                    </section>
+                                                )}
+                                            </div>
                                         ))}
                                         {nextGravesOffset !== null && (
                                             <button
@@ -567,98 +698,10 @@ export const AdminPage = () => {
                     </section>
 
                     <section className="admin-card admin-editor-panel">
-                        {selectedGrave ? (
-                            <>
-                                <div className="admin-selected-grave">
-                                    <span>Ausgewählte Grabstelle</span>
-                                    <h2>{selectedGrave.displayLastName}, {selectedGrave.firstName}</h2>
-                                    <p>{selectedGrave.cemetery}</p>
-                                </div>
-
-                                <form className="admin-form" onSubmit={saveGraveText}>
-                                    <h3>{formState.id ? 'Text bearbeiten' : 'Neuen Text hinzufügen'}</h3>
-                                    <label>
-                                        Verfasst von
-                                        <select
-                                            value={formState.role}
-                                            required
-                                            onChange={(event) => setFormState((state) => ({ ...state, role: event.target.value }))}
-                                        >
-                                            {(roles.length ? roles.map((role) => role.name) : fallbackAuthorRoles)
-                                                .map((role) => <option key={role} value={role}>{role}</option>)}
-                                        </select>
-                                    </label>
-                                    <label>
-                                        Datum
-                                        <input
-                                            value={formState.date}
-                                            type="text"
-                                            inputMode="numeric"
-                                            placeholder="TT.MM.JJJJ"
-                                            required
-                                            onChange={(event) => setFormState((state) => ({ ...state, date: event.target.value }))}
-                                        />
-                                    </label>
-                                    <label className="admin-form-wide">
-                                        Text
-                                        <textarea
-                                            value={formState.text}
-                                            maxLength={5000}
-                                            required
-                                            rows={9}
-                                            placeholder="Text eingeben, der später auf der Grabdetailseite angezeigt wird."
-                                            onChange={(event) => setFormState((state) => ({ ...state, text: event.target.value }))}
-                                        />
-                                    </label>
-                                    <div className="admin-form-actions">
-                                        <button type="submit">{formState.id ? 'Speichern' : 'Hinzufügen'}</button>
-                                        {formState.id && (
-                                            <button type="button" className="admin-secondary" onClick={() => setFormState(emptyForm())}>
-                                                Abbrechen
-                                            </button>
-                                        )}
-                                    </div>
-                                </form>
-
-                                <div className="admin-text-section">
-                                    <h3>Vorhandene Texte</h3>
-                                    {isLoadingTexts ? <p>Lade Texte …</p> : (
-                                        <div className="admin-text-list">
-                                            {graveTexts.length === 0 ? (
-                                                <p className="analytics-empty">Für diese Grabstelle sind noch keine Texte hinterlegt.</p>
-                                            ) : graveTexts.map((graveText) => (
-                                                <article key={graveText.id} className="admin-text-item">
-                                                    <header>
-                                                        <div>
-                                                            <strong>{graveText.role}</strong>
-                                                            <span>{formatDate(graveText.date)}</span>
-                                                        </div>
-                                                    </header>
-                                                    <p>{graveText.text}</p>
-                                                    <footer>
-                                                        <small>
-                                                            Angelegt von {graveText.createdBy}
-                                                            {graveText.updatedBy ? ` · geändert von ${graveText.updatedBy}` : ''}
-                                                        </small>
-                                                        <span>
-                                                            <button type="button" className="admin-secondary" onClick={() => editGraveText(graveText)}>Bearbeiten</button>
-                                                            <button type="button" className="analytics-delete" onClick={() => void deleteGraveText(graveText)}>Löschen</button>
-                                                        </span>
-                                                    </footer>
-                                                </article>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                            </>
-                        ) : (
-                            <div className="admin-empty-selection">
-                                <h2>Keine Grabstelle ausgewählt</h2>
-                                <p>Suche links nach einer Grabstelle und wähle sie aus, um Texte zu bearbeiten.</p>
-                            </div>
-                        )}
+                        {renderEditorContent()}
                     </section>
-                </div> : (
+                    </div>
+                </> : (
                     <section className="admin-card admin-no-permission">
                         <h2>Keine Berechtigung</h2>
                         <p>Dieses Profil darf keine Grabtexte bearbeiten. Bitte wende dich an ein Profil mit Profilverwaltung.</p>
