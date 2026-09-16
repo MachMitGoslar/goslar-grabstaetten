@@ -78,7 +78,7 @@ export const AnalyticsPage = () => {
                 clearAnalyticsSession();
                 setCredentials('');
                 setSummary(null);
-                setError('Mailadresse oder Passwort ist falsch.');
+                setError('Nutzername oder Passwort ist falsch.');
                 return;
             }
 
