@@ -39,16 +39,26 @@ export const logoutAdmin = async () => {
     clearAnalyticsSession();
 };
 
-export const requestAdminPasswordCode = async (email: string, purpose: 'setup' | 'reset' = 'reset') => {
-    const result = await fetch(`${analyticsApiBaseUrl}/api/admin/password-code/request`, {
+export type AdminAccessCode = {
+    code: string;
+    url: string;
+    path: string;
+    expiresInMinutes: number;
+    purpose: 'setup' | 'reset';
+};
+
+export const createAdminAccessCode = async (_credentials: string, userId: string) => {
+    const result = await fetch(`${analyticsApiBaseUrl}/api/analytics/users/${encodeURIComponent(userId)}/access-code`, {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, purpose }),
+        headers: getAnalyticsAuthHeaders(),
     });
-    const data = await result.json().catch(() => ({})) as { error?: string; message?: string };
-    if (!result.ok) throw new Error(data.error ?? 'Code konnte nicht angefordert werden.');
-    return data.message ?? 'Wenn ein Profil zu dieser Mailadresse existiert, wurde ein Code versendet.';
+    const data = await result.json().catch(() => ({})) as { error?: string; message?: string; access?: AdminAccessCode };
+    if (!result.ok || !data.access) throw new Error(data.error ?? 'Zugangscode konnte nicht erstellt werden.');
+    return {
+        message: data.message ?? 'Zugangscode wurde erstellt.',
+        access: data.access,
+    };
 };
 
 export const verifyAdminSetupCode = async (setupToken: string, code: string) => {
@@ -70,12 +80,12 @@ export const completeAdminSetupPassword = async (setupToken: string, code: strin
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ setupToken, code, password }),
     });
-    const data = await result.json().catch(() => ({})) as { error?: string; message?: string; email?: string };
+    const data = await result.json().catch(() => ({})) as { error?: string; message?: string; username?: string };
     if (!result.ok) throw new Error(data.error ?? 'Passwort konnte nicht gesetzt werden.');
     markAnalyticsSession();
     return {
         message: data.message ?? 'Passwort wurde gesetzt.',
-        email: data.email ?? '',
+        username: data.username ?? '',
     };
 };
 
@@ -86,12 +96,12 @@ export const completeAdminResetPassword = async (resetToken: string, code: strin
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ setupToken: resetToken, code, password, purpose: 'reset' }),
     });
-    const data = await result.json().catch(() => ({})) as { error?: string; message?: string; email?: string };
+    const data = await result.json().catch(() => ({})) as { error?: string; message?: string; username?: string };
     if (!result.ok) throw new Error(data.error ?? 'Passwort konnte nicht gesetzt werden.');
     markAnalyticsSession();
     return {
         message: data.message ?? 'Passwort wurde gesetzt.',
-        email: data.email ?? '',
+        username: data.username ?? '',
     };
 };
 
@@ -117,7 +127,7 @@ export const changeAdminPassword = async (_credentials: string, currentPassword:
         },
         body: JSON.stringify({ currentPassword, newPassword }),
     });
-    const data = await result.json().catch(() => ({})) as { error?: string; message?: string; email?: string };
+    const data = await result.json().catch(() => ({})) as { error?: string; message?: string };
     if (!result.ok) throw new Error(data.error ?? 'Passwort konnte nicht geändert werden.');
     return {
         message: data.message ?? 'Passwort wurde geändert.',

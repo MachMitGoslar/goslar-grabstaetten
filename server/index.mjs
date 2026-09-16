@@ -6,8 +6,6 @@ import { dirname, resolve } from 'node:path';
 import { createHash, randomBytes, randomInt, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import net from 'node:net';
-import tls from 'node:tls';
 
 const { Pool } = pg;
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -18,14 +16,7 @@ const host = process.env.API_HOST ?? '127.0.0.1';
 const databaseUrl = process.env.DATABASE_URL ?? 'postgresql://grave:grave@db:5432/gravedb';
 const analyticsAdminUser = process.env.ANALYTICS_ADMIN_USER ?? '';
 const analyticsAdminPassword = process.env.ANALYTICS_ADMIN_PASSWORD ?? '';
-const smtpHost = process.env.SMTP_HOST ?? '';
-const smtpPort = Number(process.env.SMTP_PORT ?? 587);
-const smtpUser = process.env.SMTP_USER ?? '';
-const smtpPassword = process.env.SMTP_PASSWORD ?? '';
-const smtpFrom = process.env.SMTP_FROM ?? process.env.ADMIN_MAIL_FROM ?? '';
-const smtpSecure = process.env.SMTP_SECURE === 'true';
 const publicBaseUrl = process.env.PUBLIC_BASE_URL ?? '';
-const isProduction = process.env.NODE_ENV === 'production';
 const forceSecureCookies = process.env.FORCE_SECURE_COOKIES === 'true';
 const adminPermissionKeys = new Set(['statistics', 'grave_texts', 'grave_text_roles', 'data_import', 'profile_management']);
 const bootstrapAdminPermissions = [...adminPermissionKeys];
@@ -120,7 +111,8 @@ const ensureAnalyticsTable = () => {
         CREATE TABLE IF NOT EXISTS analytics_users (
             id bigserial PRIMARY KEY,
             username text NOT NULL UNIQUE,
-            email text UNIQUE,
+            first_name text,
+            last_name text,
             password_hash text,
             permissions text[] NOT NULL DEFAULT ARRAY['statistics']::text[],
             password_set_at timestamptz,
@@ -134,7 +126,8 @@ const ensureAnalyticsTable = () => {
             created_at timestamptz NOT NULL DEFAULT now()
         );
         ALTER TABLE analytics_users ALTER COLUMN password_hash DROP NOT NULL;
-        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS email text;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS first_name text;
+        ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS last_name text;
         ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS permissions text[] NOT NULL DEFAULT ARRAY['statistics']::text[];
         ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS password_set_at timestamptz;
         ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_code_hash text;
@@ -144,9 +137,7 @@ const ensureAnalyticsTable = () => {
         ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_link_token_hash text;
         ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_link_token_lookup text;
         ALTER TABLE analytics_users ADD COLUMN IF NOT EXISTS auth_code_attempts integer NOT NULL DEFAULT 0;
-        UPDATE analytics_users SET email = username WHERE email IS NULL AND username LIKE '%@%';
         UPDATE analytics_users SET password_set_at = created_at WHERE password_set_at IS NULL AND password_hash IS NOT NULL;
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_analytics_users_email_unique ON analytics_users (lower(email)) WHERE email IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_analytics_users_auth_link_token_lookup ON analytics_users (auth_link_token_lookup) WHERE auth_link_token_lookup IS NOT NULL;
         CREATE TABLE IF NOT EXISTS analytics_sessions (
             token_lookup text PRIMARY KEY,
@@ -248,8 +239,9 @@ const verifyPassword = async (password, storedHash) => {
     return actual.length === expected.length && timingSafeEqual(actual, expected);
 };
 
-const normalizeEmail = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
-const isValidEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) && value.length <= 254;
+const normalizeUsername = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
+const normalizePersonName = (value) => (typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '');
+const isValidUsername = (value) => /^[a-z0-9][a-z0-9._-]{2,63}$/.test(value);
 const createLoginCode = () => String(randomInt(100000, 1000000));
 const createSetupToken = () => randomBytes(24).toString('hex');
 const isValidSetupToken = (value) => /^[a-f0-9]{48}$/.test(value);
@@ -343,130 +335,7 @@ const rejectIfRateLimited = async (request, response, scope, identifier, options
     return true;
 };
 
-const readSmtpResponse = (socket) => new Promise((resolveResponse, reject) => {
-    let buffer = '';
-    const onData = (chunk) => {
-        buffer += chunk.toString('utf8');
-        const lines = buffer.split(/\r?\n/).filter(Boolean);
-        const lastLine = lines.at(-1);
-        if (lastLine && /^\d{3} /.test(lastLine)) {
-            socket.off('data', onData);
-            socket.off('error', reject);
-            resolveResponse(buffer);
-        }
-    };
-    socket.on('data', onData);
-    socket.once('error', reject);
-});
-
-const sendSmtpCommand = async (socket, command, expectedCodes) => {
-    socket.write(`${command}\r\n`);
-    const response = await readSmtpResponse(socket);
-    const code = Number(response.slice(0, 3));
-    if (!expectedCodes.includes(code)) {
-        throw new Error(`SMTP command failed: ${command.replace(/ .*/, ' ***')} -> ${response.trim()}`);
-    }
-    return response;
-};
-
-const escapeMailText = (value) => value.replace(/^\./gm, '..');
-const escapeMailHeader = (value) => String(value).replace(/[\r\n]+/g, ' ').trim();
-const assertSafeSmtpValue = (value, label) => {
-    if (/[\r\n]/.test(String(value))) {
-        throw new Error(`${label} contains invalid control characters.`);
-    }
-};
-const assertSmtpAddress = (value, label) => {
-    assertSafeSmtpValue(value, label);
-    if (!isValidEmail(String(value))) {
-        throw new Error(`${label} is not a valid email address.`);
-    }
-};
-const getMailMessageIdDomain = () => {
-    const fromDomain = smtpFrom.split('@')[1]?.replace(/[<>]/g, '').trim();
-    return fromDomain || smtpHost || 'localhost';
-};
-
-const sendMail = async ({ to, subject, text, fallbackCode = '', fallbackLoginUrl = '' }) => {
-    if (!smtpHost || !smtpFrom) {
-        if (isProduction) {
-            throw new Error('SMTP must be configured in production.');
-        }
-        logInfo('SMTP not configured; admin mail fallback is printed for development', { to, subject });
-        if (fallbackCode) {
-            console.log(`ADMIN_LOGIN_CODE=${fallbackCode}`);
-        }
-        if (fallbackLoginUrl) {
-            console.log(`ADMIN_LOGIN_URL=${fallbackLoginUrl}`);
-        }
-        return { delivered: false };
-    }
-
-    assertSafeSmtpValue(smtpHost, 'SMTP_HOST');
-    if (!Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535) {
-        throw new Error('SMTP_PORT is invalid.');
-    }
-    assertSmtpAddress(smtpFrom, 'SMTP_FROM');
-    assertSmtpAddress(to, 'recipient');
-
-    let socket;
-    try {
-        socket = smtpSecure
-            ? tls.connect({ host: smtpHost, port: smtpPort, servername: smtpHost })
-            : net.connect({ host: smtpHost, port: smtpPort });
-        socket.setTimeout(15000, () => socket.destroy(new Error('SMTP connection timed out.')));
-
-        await readSmtpResponse(socket);
-        let ehloResponse = await sendSmtpCommand(socket, `EHLO ${smtpHost}`, [250]);
-
-        if (!smtpSecure && ehloResponse.includes('STARTTLS')) {
-            await sendSmtpCommand(socket, 'STARTTLS', [220]);
-            socket = tls.connect({ socket, servername: smtpHost });
-            socket.setTimeout(15000, () => socket.destroy(new Error('SMTP TLS connection timed out.')));
-            await new Promise((resolveSocket, reject) => {
-                socket.once('secureConnect', resolveSocket);
-                socket.once('error', reject);
-            });
-            await sendSmtpCommand(socket, `EHLO ${smtpHost}`, [250]);
-        }
-
-        if (smtpUser && smtpPassword) {
-            await sendSmtpCommand(socket, 'AUTH LOGIN', [334]);
-            await sendSmtpCommand(socket, Buffer.from(smtpUser).toString('base64'), [334]);
-            await sendSmtpCommand(socket, Buffer.from(smtpPassword).toString('base64'), [235]);
-        }
-
-        await sendSmtpCommand(socket, `MAIL FROM:<${smtpFrom}>`, [250]);
-        await sendSmtpCommand(socket, `RCPT TO:<${to}>`, [250, 251]);
-        await sendSmtpCommand(socket, 'DATA', [354]);
-        const messageId = `<${randomBytes(16).toString('hex')}@${getMailMessageIdDomain()}>`;
-        socket.write([
-            `From: ${escapeMailHeader(smtpFrom)}`,
-            `To: ${escapeMailHeader(to)}`,
-            `Subject: ${escapeMailHeader(subject)}`,
-            `Date: ${new Date().toUTCString()}`,
-            `Message-ID: ${messageId}`,
-            'MIME-Version: 1.0',
-            'Content-Type: text/plain; charset=UTF-8',
-            'Content-Transfer-Encoding: 8bit',
-            '',
-            escapeMailText(text),
-            '.',
-            '',
-        ].join('\r\n'));
-        const dataResponse = await readSmtpResponse(socket);
-        if (Number(dataResponse.slice(0, 3)) !== 250) {
-            throw new Error(`SMTP DATA failed: ${dataResponse.trim()}`);
-        }
-        await sendSmtpCommand(socket, 'QUIT', [221]).catch(() => undefined);
-        return { delivered: true };
-    } finally {
-        socket?.end();
-        socket?.destroy();
-    }
-};
-
-const storeAuthCode = async ({ email, purpose }) => {
+const storeAuthCode = async ({ username, purpose }) => {
     const code = createLoginCode();
     const codeHash = await hashPassword(code);
     const setupToken = purpose === 'setup' || purpose === 'reset' ? createSetupToken() : '';
@@ -475,15 +344,15 @@ const storeAuthCode = async ({ email, purpose }) => {
     const result = await pool.query(`
         UPDATE analytics_users
         SET auth_code_hash = $2,
-            auth_code_expires_at = now() + interval '30 minutes',
+            auth_code_expires_at = now() + interval '24 hours',
             auth_code_purpose = $3,
             auth_code_sent_at = now(),
             auth_link_token_hash = $4,
             auth_link_token_lookup = $5,
             auth_code_attempts = 0
-        WHERE lower(email) = lower($1)
-        RETURNING id, email
-    `, [email, codeHash, purpose, setupTokenHash, setupTokenLookup]);
+        WHERE username = $1
+        RETURNING id, username, first_name, last_name
+    `, [username, codeHash, purpose, setupTokenHash, setupTokenLookup]);
 
     if (result.rowCount === 0) {
         return null;
@@ -492,27 +361,38 @@ const storeAuthCode = async ({ email, purpose }) => {
     return { user: result.rows[0], code, setupToken };
 };
 
-const sendPasswordCode = async ({ email, code, purpose, setupToken = '' }) => {
-    const isSetup = purpose === 'setup';
+const getAdminAccessPath = ({ purpose, setupToken = '' }) => {
+    const loginPath = purpose === 'setup' ? '/admin/setup' : '/admin/passwort-zuruecksetzen';
+    return `${loginPath}?token=${encodeURIComponent(setupToken)}`;
+};
+
+const getAdminAccessUrl = ({ purpose, setupToken = '' }) => {
     const baseUrl = publicBaseUrl ? publicBaseUrl.replace(/\/$/, '') : '';
-    const loginPath = isSetup ? '/admin/setup' : '/admin/passwort-zuruecksetzen';
-    const loginUrl = `${baseUrl}${loginPath}?token=${encodeURIComponent(setupToken)}`;
-    await sendMail({
-        to: email,
-        subject: isSetup ? 'dein Profil: Friedhof Goslar Administrations Plattform' : 'Passwort zurücksetzen',
-        fallbackCode: code,
-        fallbackLoginUrl: loginUrl,
-        text: [
-            isSetup
-                ? 'Für dich wurde ein Admin-Profil angelegt.'
-                : 'Du hast einen Code zum Zurücksetzen deines Passworts angefordert.',
-            '',
-            `Code: ${code}`,
-            'Der Code ist 30 Minuten gültig.',
-            '',
-            `Login: ${loginUrl}`,
-        ].join('\n'),
-    });
+    return `${baseUrl}${getAdminAccessPath({ purpose, setupToken })}`;
+};
+
+const mapAuthCodeToAccess = ({ code, setupToken, purpose }) => ({
+    code,
+    url: getAdminAccessUrl({ purpose, setupToken }),
+    path: getAdminAccessPath({ purpose, setupToken }),
+    expiresInMinutes: 24 * 60,
+    purpose,
+});
+
+const createManualAccessCode = async ({ username, purpose }) => {
+    const codeResult = await storeAuthCode({ username, purpose });
+    if (!codeResult) {
+        return null;
+    }
+
+    return {
+        user: codeResult.user,
+        access: mapAuthCodeToAccess({
+            code: codeResult.code,
+            setupToken: codeResult.setupToken,
+            purpose,
+        }),
+    };
 };
 
 const findAuthUserByToken = async (authToken, purpose) => {
@@ -521,7 +401,7 @@ const findAuthUserByToken = async (authToken, purpose) => {
     }
 
     const result = await pool.query(`
-        SELECT id, email, permissions, password_hash, auth_code_hash, auth_link_token_hash, auth_code_attempts
+        SELECT id, username, first_name, last_name, permissions, password_hash, auth_code_hash, auth_link_token_hash, auth_code_attempts
         FROM analytics_users
         WHERE auth_code_purpose = $2
           AND auth_code_hash IS NOT NULL
@@ -577,7 +457,6 @@ const requireAnalyticsAdmin = async (request, response, next) => {
                 sessions.username,
                 sessions.permissions,
                 sessions.csrf_token,
-                users.email,
                 users.password_hash
             FROM analytics_sessions sessions
             LEFT JOIN analytics_users users ON users.id = sessions.user_id
@@ -594,7 +473,6 @@ const requireAnalyticsAdmin = async (request, response, next) => {
         const session = result.rows[0];
         request.analyticsUser = session.username;
         request.analyticsUserId = session.user_id;
-        request.analyticsUserEmail = session.email;
         request.analyticsPasswordHash = session.password_hash;
         request.analyticsSessionTokenLookup = tokenLookup(sessionToken);
         request.analyticsCsrfToken = session.csrf_token;
@@ -657,7 +535,7 @@ app.post('/api/admin/login', async (request, response) => {
     }
 
     if (!user || !password) {
-        response.status(400).json({ error: 'Mailadresse oder Passwort ist ungültig.' });
+        response.status(400).json({ error: 'Nutzername oder Passwort ist ungültig.' });
         return;
     }
 
@@ -681,12 +559,12 @@ app.post('/api/admin/login', async (request, response) => {
         }
 
         const result = await pool.query(
-            'SELECT id, email, username, password_hash, permissions FROM analytics_users WHERE lower(email) = lower($1) OR username = $1',
-            [user],
+            'SELECT id, username, password_hash, permissions FROM analytics_users WHERE username = $1',
+            [user.toLowerCase()],
         );
 
         if (result.rowCount !== 1 || !result.rows[0].password_hash || !await verifyPassword(password, result.rows[0].password_hash)) {
-            response.status(401).json({ error: 'Mailadresse oder Passwort ist falsch.' });
+            response.status(401).json({ error: 'Nutzername oder Passwort ist falsch.' });
             return;
         }
 
@@ -695,10 +573,10 @@ app.post('/api/admin/login', async (request, response) => {
             request,
             response,
             userId: result.rows[0].id,
-            username: result.rows[0].email ?? result.rows[0].username,
+            username: result.rows[0].username,
             permissions,
         });
-        response.json({ message: 'Anmeldung erfolgreich.', username: result.rows[0].email ?? result.rows[0].username, permissions });
+        response.json({ message: 'Anmeldung erfolgreich.', username: result.rows[0].username, permissions });
     } catch (error) {
         logError('Failed to login admin user', error, { user });
         response.status(500).json({ error: 'Anmeldung konnte nicht durchgeführt werden.' });
@@ -718,9 +596,9 @@ app.post('/api/admin/logout', requireAnalyticsAdmin, requireCsrfToken, async (re
 app.get('/api/analytics/users', requireAnalyticsAdmin, requireAnalyticsUserManager, async (_request, response) => {
     await ensureAnalyticsTable();
     const result = await pool.query(`
-        SELECT id, username, email, permissions, password_set_at, auth_code_sent_at, created_at
+        SELECT id, username, first_name, last_name, permissions, password_set_at, auth_code_sent_at, created_at
         FROM analytics_users
-        ORDER BY COALESCE(email, username)
+        ORDER BY lower(username)
     `);
     response.json({
         users: result.rows,
@@ -730,19 +608,25 @@ app.get('/api/analytics/users', requireAnalyticsAdmin, requireAnalyticsUserManag
 });
 
 app.post('/api/analytics/users', requireAnalyticsAdmin, requireCsrfToken, requireAnalyticsUserManager, async (request, response) => {
-    const email = normalizeEmail(request.body?.email);
+    const username = normalizeUsername(request.body?.username);
+    const firstName = normalizePersonName(request.body?.firstName);
+    const lastName = normalizePersonName(request.body?.lastName);
     const permissions = normalizePermissions(request.body?.permissions);
 
-    if (!isValidEmail(email)) {
-        response.status(400).json({ error: 'Bitte eine gültige Mailadresse angeben.' });
+    if (!firstName || firstName.length > 120 || !lastName || lastName.length > 120) {
+        response.status(400).json({ error: 'Bitte Vor- und Nachnamen angeben.' });
+        return;
+    }
+    if (!isValidUsername(username)) {
+        response.status(400).json({ error: 'Bitte einen gültigen Nutzernamen angeben. Erlaubt sind 3–64 Zeichen: Kleinbuchstaben, Zahlen, Punkt, Unterstrich und Bindestrich.' });
         return;
     }
     if (permissions.length === 0) {
         response.status(400).json({ error: 'Bitte mindestens eine Berechtigung auswählen.' });
         return;
     }
-    if (safeEqual(email, analyticsAdminUser)) {
-        response.status(409).json({ error: 'Diese Mailadresse ist bereits vergeben.' });
+    if (safeEqual(username, analyticsAdminUser)) {
+        response.status(409).json({ error: 'Dieser Nutzername ist bereits vergeben.' });
         return;
     }
 
@@ -755,12 +639,14 @@ app.post('/api/analytics/users', requireAnalyticsAdmin, requireCsrfToken, requir
         const setupTokenLookup = tokenLookup(setupToken);
         const result = await pool.query(`
             INSERT INTO analytics_users (
-                username, email, password_hash, permissions,
+                username, first_name, last_name, password_hash, permissions,
                 auth_code_hash, auth_code_expires_at, auth_code_purpose, auth_code_sent_at,
                 auth_link_token_hash, auth_link_token_lookup, auth_code_attempts
             )
-            VALUES ($1, $1, NULL, $2, $3, now() + interval '30 minutes', 'setup', now(), $4, $5, 0)
+            VALUES ($1, $2, $3, NULL, $4, $5, now() + interval '24 hours', 'setup', now(), $6, $7, 0)
             ON CONFLICT (username) DO UPDATE SET
+                first_name = EXCLUDED.first_name,
+                last_name = EXCLUDED.last_name,
                 permissions = EXCLUDED.permissions,
                 auth_code_hash = EXCLUDED.auth_code_hash,
                 auth_code_expires_at = EXCLUDED.auth_code_expires_at,
@@ -770,22 +656,24 @@ app.post('/api/analytics/users', requireAnalyticsAdmin, requireCsrfToken, requir
                 auth_link_token_lookup = EXCLUDED.auth_link_token_lookup,
                 auth_code_attempts = 0
             WHERE analytics_users.password_hash IS NULL
-            RETURNING id, username, email, permissions, password_set_at, auth_code_sent_at, created_at
-        `, [email, permissions, setupCodeHash, setupTokenHash, setupTokenLookup]);
+            RETURNING id, username, first_name, last_name, permissions, password_set_at, auth_code_sent_at, created_at
+        `, [username, firstName, lastName, permissions, setupCodeHash, setupTokenHash, setupTokenLookup]);
 
         if (result.rowCount === 0) {
-            response.status(409).json({ error: 'Diese Mailadresse ist bereits vergeben und hat bereits ein Passwort.' });
+            response.status(409).json({ error: 'Dieser Nutzername ist bereits vergeben und hat bereits ein Passwort.' });
             return;
         }
 
-        await sendPasswordCode({ email, code: setupCode, purpose: 'setup', setupToken });
-        response.status(result.rows[0].password_set_at ? 200 : 201).json(result.rows[0]);
+        response.status(result.rows[0].password_set_at ? 200 : 201).json({
+            user: result.rows[0],
+            access: mapAuthCodeToAccess({ code: setupCode, setupToken, purpose: 'setup' }),
+        });
     } catch (error) {
         if (error.code === '23505') {
-            response.status(409).json({ error: 'Diese Mailadresse ist bereits vergeben.' });
+            response.status(409).json({ error: 'Dieser Nutzername ist bereits vergeben.' });
             return;
         }
-        logError('Failed to create analytics user', error, { email });
+        logError('Failed to create analytics user', error, { username });
         response.status(500).json({ error: 'Profil konnte nicht angelegt werden.' });
     }
 });
@@ -808,7 +696,7 @@ app.patch('/api/analytics/users/:id', requireAnalyticsAdmin, requireCsrfToken, r
             UPDATE analytics_users
             SET permissions = $2
             WHERE id = $1
-            RETURNING id, username, email, permissions, password_set_at, auth_code_sent_at, created_at
+            RETURNING id, username, first_name, last_name, permissions, password_set_at, auth_code_sent_at, created_at
         `, [request.params.id, permissions]);
 
         if (result.rowCount === 0) {
@@ -824,6 +712,48 @@ app.patch('/api/analytics/users/:id', requireAnalyticsAdmin, requireCsrfToken, r
     }
 });
 
+app.post('/api/analytics/users/:id/access-code', requireAnalyticsAdmin, requireCsrfToken, requireAnalyticsUserManager, async (request, response) => {
+    if (!/^\d+$/.test(request.params.id)) {
+        response.status(400).json({ error: 'Ungültige Profil-ID.' });
+        return;
+    }
+    if (await rejectIfRateLimited(request, response, 'admin-access-code-create', request.analyticsUser, { limit: 20, windowMs: 15 * 60 * 1000 })) {
+        return;
+    }
+
+    try {
+        await ensureAnalyticsTable();
+        const userResult = await pool.query(
+            'SELECT id, username, password_hash FROM analytics_users WHERE id = $1',
+            [request.params.id],
+        );
+
+        if (userResult.rowCount === 0) {
+            response.status(404).json({ error: 'Profil wurde nicht gefunden.' });
+            return;
+        }
+
+        const user = userResult.rows[0];
+        const purpose = user.password_hash ? 'reset' : 'setup';
+        const accessResult = await createManualAccessCode({ username: user.username, purpose });
+        if (!accessResult) {
+            response.status(404).json({ error: 'Profil wurde nicht gefunden.' });
+            return;
+        }
+
+        response.status(201).json({
+            user: accessResult.user,
+            access: accessResult.access,
+            message: purpose === 'setup'
+                ? 'Einrichtungscode wurde erstellt.'
+                : 'Neuer Zugangscode wurde erstellt.',
+        });
+    } catch (error) {
+        logError('Failed to create manual admin access code', error, { userId: request.params.id });
+        response.status(500).json({ error: 'Zugangscode konnte nicht erstellt werden.' });
+    }
+});
+
 app.delete('/api/analytics/users/:id', requireAnalyticsAdmin, requireCsrfToken, requireAnalyticsUserManager, async (request, response) => {
     if (!/^\d+$/.test(request.params.id)) {
         response.status(400).json({ error: 'Ungültige Profil-ID.' });
@@ -834,162 +764,64 @@ app.delete('/api/analytics/users/:id', requireAnalyticsAdmin, requireCsrfToken, 
     response.status(result.rowCount ? 204 : 404).end();
 });
 
-app.post('/api/admin/password-code/request', async (request, response) => {
-    const email = normalizeEmail(request.body?.email);
-    const purpose = request.body?.purpose === 'setup' ? 'setup' : 'reset';
-
-    if (
-        await rejectIfRateLimited(request, response, 'admin-code-request-ip', purpose, { limit: 12, windowMs: 60 * 60 * 1000 })
-        || await rejectIfRateLimited(request, response, 'admin-code-request-email', `${purpose}:${email}`, { limit: 3, windowMs: 60 * 60 * 1000 })
-    ) {
-        return;
-    }
-
-    if (!isValidEmail(email)) {
-        response.status(400).json({ error: 'Bitte eine gültige Mailadresse angeben.' });
-        return;
-    }
-
-    try {
-        await ensureAnalyticsTable();
-        const codeResult = await storeAuthCode({ email, purpose });
-        if (codeResult) {
-            await sendPasswordCode({ email, code: codeResult.code, purpose, setupToken: codeResult.setupToken });
-        }
-        response.status(202).json({ message: 'Wenn ein Profil zu dieser Mailadresse existiert, wurde ein Code versendet.' });
-    } catch (error) {
-        logError('Failed to request admin password code', error, { email, purpose });
-        response.status(500).json({ error: 'Code konnte nicht angefordert werden.' });
-    }
-});
-
 app.post('/api/admin/password-code/verify', async (request, response) => {
-    const email = normalizeEmail(request.body?.email);
     const setupToken = typeof request.body?.setupToken === 'string' ? request.body.setupToken.trim() : '';
     const code = typeof request.body?.code === 'string' ? request.body.code.trim() : '';
-    const purpose = setupToken ? (request.body?.purpose === 'reset' ? 'reset' : 'setup') : 'reset';
+    const purpose = request.body?.purpose === 'reset' ? 'reset' : 'setup';
 
     if (!isValidSetupToken(setupToken) || !/^\d{6}$/.test(code)) {
-        response.status(400).json({ error: 'Mailadresse oder Code ist ungültig.' });
+        response.status(400).json({ error: 'Code oder Link ist ungültig.' });
         return;
     }
     if (
         await rejectIfRateLimited(request, response, 'admin-code-verify-ip', purpose, { limit: 30, windowMs: 15 * 60 * 1000 })
-        || await rejectIfRateLimited(request, response, 'admin-code-verify-subject', `${purpose}:${setupToken || email}`, { limit: 8, windowMs: 15 * 60 * 1000 })
+        || await rejectIfRateLimited(request, response, 'admin-code-verify-subject', `${purpose}:${setupToken}`, { limit: 8, windowMs: 15 * 60 * 1000 })
     ) {
         return;
     }
 
     try {
         await ensureAnalyticsTable();
-        if (setupToken) {
-            const setupUser = await findAuthUserByToken(setupToken, purpose);
-            if (!setupUser || !await verifyPassword(code, setupUser.auth_code_hash)) {
-                await registerFailedCodeAttempt(setupUser?.id);
-                response.status(400).json({ error: 'Der Code ist ungültig oder abgelaufen.' });
-                return;
-            }
-
-            response.json({ message: 'Code wurde bestätigt.' });
-            return;
-        }
-
-        const result = await pool.query(`
-            SELECT id, auth_code_hash, auth_code_attempts
-            FROM analytics_users
-            WHERE lower(email) = lower($1)
-              AND auth_code_purpose = 'reset'
-              AND auth_code_hash IS NOT NULL
-              AND auth_code_expires_at > now()
-        `, [email]);
-
-        if (result.rowCount !== 1 || result.rows[0].auth_code_attempts >= 5 || !await verifyPassword(code, result.rows[0].auth_code_hash)) {
-            await registerFailedCodeAttempt(result.rows[0]?.id);
+        const setupUser = await findAuthUserByToken(setupToken, purpose);
+        if (!setupUser || !await verifyPassword(code, setupUser.auth_code_hash)) {
+            await registerFailedCodeAttempt(setupUser?.id);
             response.status(400).json({ error: 'Der Code ist ungültig oder abgelaufen.' });
             return;
         }
 
         response.json({ message: 'Code wurde bestätigt.' });
     } catch (error) {
-        logError('Failed to verify admin password code', error, { email });
+        logError('Failed to verify admin password code', error);
         response.status(500).json({ error: 'Code konnte nicht geprüft werden.' });
     }
 });
 
 app.post('/api/admin/password-code/complete', async (request, response) => {
-    const email = normalizeEmail(request.body?.email);
     const setupToken = typeof request.body?.setupToken === 'string' ? request.body.setupToken.trim() : '';
     const code = typeof request.body?.code === 'string' ? request.body.code.trim() : '';
     const password = typeof request.body?.password === 'string' ? request.body.password : '';
-    const purpose = setupToken ? (request.body?.purpose === 'reset' ? 'reset' : 'setup') : 'reset';
+    const purpose = request.body?.purpose === 'reset' ? 'reset' : 'setup';
 
     if (!isValidSetupToken(setupToken) || !/^\d{6}$/.test(code) || password.length < 12 || password.length > 256) {
-        response.status(400).json({ error: 'Mailadresse, Code oder Passwort ist ungültig. Das Passwort muss mindestens 12 Zeichen lang sein.' });
+        response.status(400).json({ error: 'Code, Link oder Passwort ist ungültig. Das Passwort muss mindestens 12 Zeichen lang sein.' });
         return;
     }
     if (
         await rejectIfRateLimited(request, response, 'admin-code-complete-ip', purpose, { limit: 30, windowMs: 15 * 60 * 1000 })
-        || await rejectIfRateLimited(request, response, 'admin-code-complete-subject', `${purpose}:${setupToken || email}`, { limit: 8, windowMs: 15 * 60 * 1000 })
+        || await rejectIfRateLimited(request, response, 'admin-code-complete-subject', `${purpose}:${setupToken}`, { limit: 8, windowMs: 15 * 60 * 1000 })
     ) {
         return;
     }
 
     try {
         await ensureAnalyticsTable();
-        if (setupToken) {
-            const setupUser = await findAuthUserByToken(setupToken, purpose);
-            if (!setupUser || setupUser.auth_code_attempts >= 5 || !await verifyPassword(code, setupUser.auth_code_hash)) {
-                await registerFailedCodeAttempt(setupUser?.id);
-                response.status(400).json({ error: 'Der Code ist ungültig oder abgelaufen.' });
-                return;
-            }
-            if (setupUser.password_hash && await verifyPassword(password, setupUser.password_hash)) {
-                response.status(400).json({ error: 'Das neue Passwort muss sich vom bisherigen Passwort unterscheiden.' });
-                return;
-            }
-
-            const passwordHash = await hashPassword(password);
-            await pool.query(`
-                UPDATE analytics_users
-                SET password_hash = $2,
-                    password_set_at = now(),
-                    auth_code_hash = NULL,
-                    auth_code_expires_at = NULL,
-                    auth_code_purpose = NULL,
-                    auth_code_sent_at = NULL,
-                    auth_link_token_hash = NULL,
-                    auth_link_token_lookup = NULL,
-                    auth_code_attempts = 0
-                WHERE id = $1
-            `, [setupUser.id, passwordHash]);
-            await pool.query('DELETE FROM analytics_sessions WHERE user_id = $1', [setupUser.id]);
-
-            await createAdminSession({
-                request,
-                response,
-                userId: setupUser.id,
-                username: setupUser.email,
-                permissions: normalizePermissions(setupUser.permissions),
-            });
-            response.json({ message: 'Passwort wurde gesetzt.', email: setupUser.email });
-            return;
-        }
-
-        const result = await pool.query(`
-            SELECT id, email, permissions, password_hash, auth_code_hash, auth_code_attempts
-            FROM analytics_users
-            WHERE lower(email) = lower($1)
-              AND auth_code_purpose = 'reset'
-              AND auth_code_hash IS NOT NULL
-              AND auth_code_expires_at > now()
-        `, [email]);
-
-        if (result.rowCount !== 1 || result.rows[0].auth_code_attempts >= 5 || !await verifyPassword(code, result.rows[0].auth_code_hash)) {
-            await registerFailedCodeAttempt(result.rows[0]?.id);
+        const setupUser = await findAuthUserByToken(setupToken, purpose);
+        if (!setupUser || setupUser.auth_code_attempts >= 5 || !await verifyPassword(code, setupUser.auth_code_hash)) {
+            await registerFailedCodeAttempt(setupUser?.id);
             response.status(400).json({ error: 'Der Code ist ungültig oder abgelaufen.' });
             return;
         }
-        if (result.rows[0].password_hash && await verifyPassword(password, result.rows[0].password_hash)) {
+        if (setupUser.password_hash && await verifyPassword(password, setupUser.password_hash)) {
             response.status(400).json({ error: 'Das neue Passwort muss sich vom bisherigen Passwort unterscheiden.' });
             return;
         }
@@ -1007,19 +839,19 @@ app.post('/api/admin/password-code/complete', async (request, response) => {
                 auth_link_token_lookup = NULL,
                 auth_code_attempts = 0
             WHERE id = $1
-        `, [result.rows[0].id, passwordHash]);
-        await pool.query('DELETE FROM analytics_sessions WHERE user_id = $1', [result.rows[0].id]);
+        `, [setupUser.id, passwordHash]);
+        await pool.query('DELETE FROM analytics_sessions WHERE user_id = $1', [setupUser.id]);
 
         await createAdminSession({
             request,
             response,
-            userId: result.rows[0].id,
-            username: result.rows[0].email ?? email,
-            permissions: normalizePermissions(result.rows[0].permissions),
+            userId: setupUser.id,
+            username: setupUser.username,
+            permissions: normalizePermissions(setupUser.permissions),
         });
-        response.json({ message: 'Passwort wurde gesetzt.', email: result.rows[0].email ?? email });
+        response.json({ message: 'Passwort wurde gesetzt.', username: setupUser.username });
     } catch (error) {
-        logError('Failed to complete admin password setup', error, { email });
+        logError('Failed to complete admin password setup', error);
         response.status(500).json({ error: 'Passwort konnte nicht gesetzt werden.' });
     }
 });
@@ -1074,7 +906,7 @@ app.post('/api/admin/password', requireAnalyticsAdmin, requireCsrfToken, async (
             [request.analyticsUserId, request.analyticsSessionTokenLookup],
         );
 
-        response.json({ message: 'Passwort wurde geändert.', email: request.analyticsUserEmail || request.analyticsUser });
+        response.json({ message: 'Passwort wurde geändert.' });
     } catch (error) {
         logError('Failed to change admin password', error, { user: request.analyticsUser });
         response.status(500).json({ error: 'Passwort konnte nicht geändert werden.' });

@@ -55,10 +55,7 @@ export const AdminSetupPage = () => {
         }
 
         try {
-            const result = await completeAdminSetupPassword(setupToken, verifiedCode, password);
-            if (!result.email) {
-                throw new Error('Passwort wurde gesetzt, aber die Anmeldung konnte nicht vorbereitet werden.');
-            }
+            await completeAdminSetupPassword(setupToken, verifiedCode, password);
             setVerifiedCode('');
             navigate('/admin', { replace: true });
         } catch (setupError) {
@@ -77,7 +74,7 @@ export const AdminSetupPage = () => {
             {!verifiedCode ? (
                 <form key="setup-code-form" className="analytics-login" onSubmit={(event) => void verifyCode(event)}>
                     <h2>Code eingeben</h2>
-                    <p>Gib den Code aus der Mail ein. Erst nach erfolgreicher Prüfung kannst du dein Passwort festlegen.</p>
+                    <p>Gib den Zugangscode ein, den dir ein Administrator übermittelt hat. Erst nach erfolgreicher Prüfung kannst du dein Passwort festlegen.</p>
                     <label>Code<input key="setup-code-input" name="code" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" required /></label>
                     <button type="submit">Code prüfen</button>
                     {message && <p className="analytics-user-message">{message}</p>}

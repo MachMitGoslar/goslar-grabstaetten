@@ -74,7 +74,7 @@ export const AdminPasswordResetPage = () => {
             {!verifiedCode ? (
                 <form key="reset-code-form" className="analytics-login" onSubmit={(event) => void verifyCode(event)}>
                     <h2>Code eingeben</h2>
-                    <p>Gib den Code aus der Mail ein. Erst nach erfolgreicher Prüfung kannst du ein neues Passwort festlegen.</p>
+                    <p>Gib den Zugangscode ein, den dir ein Administrator übermittelt hat. Erst nach erfolgreicher Prüfung kannst du ein neues Passwort festlegen.</p>
                     <label>Code<input key="reset-code-input" name="code" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" required /></label>
                     <button type="submit">Code prüfen</button>
                     {message && <p className="analytics-user-message">{message}</p>}

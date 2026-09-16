@@ -131,7 +131,7 @@ export const AdminPage = () => {
                 clearAnalyticsSession();
                 setCredentials('');
                 setGraveTexts([]);
-                setError('Mailadresse oder Passwort ist falsch.');
+                setError('Nutzername oder Passwort ist falsch.');
                 return;
             }
 
@@ -165,7 +165,7 @@ export const AdminPage = () => {
                 clearAnalyticsSession();
                 setCredentials('');
                 setRoles([]);
-                setError('Mailadresse oder Passwort ist falsch.');
+                setError('Nutzername oder Passwort ist falsch.');
                 return;
             }
 
