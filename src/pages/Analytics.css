@@ -17,7 +17,8 @@
 .analytics-login label, .analytics-toolbar label { display: grid; gap: 7px; font-size: 14px; font-weight: 650; }
 .analytics-login input, .analytics-toolbar select { min-height: 44px; padding: 11px; border: 1px solid #cbd2cd; border-radius: 8px; background: #fff; color: #222; box-sizing: border-box; }
 .analytics-page button.analytics-link-button { padding: 0; background: transparent; color: var(--color-primary); box-shadow: none; justify-self: start; font-weight: 700; }
-.analytics-toolbar { max-width: 1200px; margin: 0 auto 20px; display: flex; justify-content: flex-end; }
+.analytics-toolbar { max-width: 1200px; margin: 0 auto 20px; display: flex; justify-content: flex-end; align-items: end; gap: 10px; flex-wrap: wrap; }
+.analytics-toolbar button { min-height: 44px; }
 .analytics-dashboard { max-width: 1200px; margin: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .analytics-dashboard section { padding: 22px; border-radius: 16px; background: #fff; box-shadow: 0 4px 18px #0000000d; }
 .analytics-dashboard h2 { margin: 0 0 18px; font-size: 18px; }
@@ -41,6 +42,30 @@
 .analytics-bar__label span { overflow-wrap: anywhere; }
 .analytics-bar__track { height: 8px; margin-top: 5px; border-radius: 10px; background: #e8ece9; overflow: hidden; }
 .analytics-bar__track span { display: block; height: 100%; min-width: 3px; border-radius: inherit; background: var(--color-primary); }
+.analytics-line-chart { display: grid; gap: 12px; overflow-x: auto; padding-bottom: 4px; }
+.analytics-line-chart svg { display: block; width: max(100%, 720px); height: auto; overflow: visible; }
+.analytics-line-chart--fit { overflow-x: visible; }
+.analytics-line-chart--fit svg { width: 100%; min-width: 0; }
+.analytics-line-chart__axis { stroke: #cfc8b4; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.analytics-line-chart__grid { stroke: #ece7d7; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.analytics-line-chart__area { fill: var(--color-primary); opacity: .12; }
+.analytics-line-chart__line { fill: none; stroke: var(--color-primary); stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.analytics-line-chart__hit-area { cursor: pointer; fill: transparent; outline: none; }
+.analytics-line-chart__point { fill: #fff; pointer-events: none; stroke: var(--color-primary); stroke-width: 2.2; transition: r .16s ease, fill .16s ease; vector-effect: non-scaling-stroke; }
+.analytics-line-chart__point[data-active="true"] { fill: var(--color-primary); }
+.analytics-line-chart__hover-line { stroke: #c8bc92; stroke-dasharray: 3 5; stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+.analytics-line-chart__tooltip rect { fill: #ffffff; filter: drop-shadow(0 3px 8px rgba(29, 27, 22, .12)); stroke: #ded3ae; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.analytics-line-chart__tooltip text { fill: #39362d; font-size: 12px; font-weight: 800; }
+.analytics-line-chart__tooltip text:last-child { fill: var(--color-primary); font-size: 13px; font-weight: 900; }
+.analytics-line-chart__y-label { fill: #69675e; font-size: 11px; font-weight: 650; }
+.analytics-line-chart__summary { display: flex; flex-wrap: wrap; gap: 10px; color: #5f625c; font-size: 13px; }
+.analytics-line-chart__summary span { border-radius: 999px; background: #f3efe1; padding: 7px 10px; }
+.analytics-line-chart__summary strong { color: var(--color-primary); }
+.analytics-single-day-chart { align-items: center; display: grid; gap: 12px; justify-items: center; min-height: 190px; padding: 24px; border: 1px dashed #ded3ae; border-radius: 18px; background: linear-gradient(135deg, #fffdf8 0%, #f6f1e2 100%); text-align: center; }
+.analytics-single-day-chart > div { align-items: center; display: grid; gap: 8px; justify-items: center; }
+.analytics-single-day-chart span { color: #656056; font-size: 14px; font-weight: 800; }
+.analytics-single-day-chart strong { align-items: center; display: inline-flex; justify-content: center; width: 86px; height: 86px; border-radius: 999px; background: var(--color-primary); color: #fff; font-size: 34px; box-shadow: 0 10px 24px rgba(92, 76, 23, 0.16); }
+.analytics-single-day-chart p { margin: 0; color: #6d6a60; font-size: 13px; }
 .analytics-error { max-width: 1200px; margin: 20px auto; color: #a52626; }
 .analytics-error--inline { margin: 0; }
 .analytics-empty { color: #68716b; }

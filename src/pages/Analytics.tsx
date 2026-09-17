@@ -44,6 +44,103 @@ const MetricBars = ({ items }: { items: Metric[] }) => {
     ) : <p className="analytics-empty">Für diesen Zeitraum liegen keine Daten vor.</p>;
 };
 
+const MetricLineChart = ({ items, scrollable = true }: { items: Metric[]; scrollable?: boolean }) => {
+    const [activePointIndex, setActivePointIndex] = useState<number | null>(null);
+
+    if (!items.length) {
+        return <p className="analytics-empty">Für diesen Zeitraum liegen keine Daten vor.</p>;
+    }
+
+    if (items.length === 1) {
+        return (
+            <div className="analytics-single-day-chart">
+                <div>
+                    <span>{items[0].label}</span>
+                    <strong>{items[0].value}</strong>
+                </div>
+                <p>Nur ein Tag mit Daten im ausgewählten Zeitraum.</p>
+            </div>
+        );
+    }
+
+    const width = scrollable ? 720 : 420;
+    const height = 240;
+    const padding = { top: 24, right: 28, bottom: 26, left: 46 };
+    const tooltipWidth = 116;
+    const tooltipHeight = 50;
+    const tooltipX = (x: number) => Math.min(Math.max(x - tooltipWidth / 2, padding.left + 4), width - padding.right - tooltipWidth);
+    const tooltipTextX = (x: number) => Math.min(Math.max(x, padding.left + tooltipWidth / 2 + 4), width - padding.right - tooltipWidth / 2);
+    const plotWidth = width - padding.left - padding.right;
+    const plotHeight = height - padding.top - padding.bottom;
+    const maximum = Math.max(...items.map((item) => item.value), 1);
+    const points = items.map((item, index) => {
+        const x = padding.left + (items.length === 1 ? plotWidth / 2 : (index / (items.length - 1)) * plotWidth);
+        const y = padding.top + plotHeight - (item.value / maximum) * plotHeight;
+        return { ...item, x, y };
+    });
+    const activePoint = activePointIndex === null ? null : points[activePointIndex];
+    const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+    const areaPath = `${path} L ${points.at(-1)?.x ?? padding.left} ${padding.top + plotHeight} L ${points[0]?.x ?? padding.left} ${padding.top + plotHeight} Z`;
+    return (
+        <div className={`analytics-line-chart${scrollable ? '' : ' analytics-line-chart--fit'}`} role="img" aria-label="Liniendiagramm pro Tag">
+            <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet">
+                <line className="analytics-line-chart__axis" x1={padding.left} y1={padding.top + plotHeight} x2={width - padding.right} y2={padding.top + plotHeight} />
+                <line className="analytics-line-chart__axis" x1={padding.left} y1={padding.top} x2={padding.left} y2={padding.top + plotHeight} />
+                {[0, 0.5, 1].map((tick) => {
+                    const y = padding.top + plotHeight - tick * plotHeight;
+                    return <line key={tick} className="analytics-line-chart__grid" x1={padding.left} y1={y} x2={width - padding.right} y2={y} />;
+                })}
+                <path className="analytics-line-chart__area" d={areaPath} />
+                <path className="analytics-line-chart__line" d={path} />
+                {points.map((point, index) => (
+                    <g key={`${point.label}-${point.x}`}>
+                        <circle
+                            className="analytics-line-chart__hit-area"
+                            cx={point.x}
+                            cy={point.y}
+                            r="13"
+                            onBlur={() => setActivePointIndex(null)}
+                            onFocus={() => setActivePointIndex(index)}
+                            onMouseEnter={() => setActivePointIndex(index)}
+                            onMouseLeave={() => setActivePointIndex(null)}
+                            tabIndex={0}
+                        />
+                        <circle className="analytics-line-chart__point" data-active={activePointIndex === index} cx={point.x} cy={point.y} r={activePointIndex === index ? '5.5' : '3'} />
+                    </g>
+                ))}
+                {activePoint && (
+                    <g className="analytics-line-chart__tooltip" pointerEvents="none">
+                        <line className="analytics-line-chart__hover-line" x1={activePoint.x} y1={padding.top} x2={activePoint.x} y2={padding.top + plotHeight} />
+                        <rect x={tooltipX(activePoint.x)} y={padding.top + 8} width={tooltipWidth} height={tooltipHeight} rx="10" />
+                        <text
+                            x={tooltipTextX(activePoint.x)}
+                            y={padding.top + 28}
+                            textAnchor="middle"
+                        >
+                            {formatCompactDateLabel(activePoint.label)}
+                        </text>
+                        <text
+                            x={tooltipTextX(activePoint.x)}
+                            y={padding.top + 47}
+                            textAnchor="middle"
+                        >
+                            {activePoint.value} Aufrufe
+                        </text>
+                    </g>
+                )}
+                {[0, 0.5, 1].map((tick) => {
+                    const y = padding.top + plotHeight - tick * plotHeight;
+                    return <text key={tick} className="analytics-line-chart__y-label" x={padding.left - 10} y={y + 4} textAnchor="end">{Math.round(maximum * tick)}</text>;
+                })}
+            </svg>
+            <div className="analytics-line-chart__summary">
+                <span>Maximum: <strong>{maximum}</strong></span>
+                <span>Gesamt: <strong>{items.reduce((sum, item) => sum + item.value, 0)}</strong></span>
+            </div>
+        </div>
+    );
+};
+
 const KpiCard = ({ value, label, definition }: {
     value: number;
     label: string;
@@ -56,6 +153,19 @@ const KpiCard = ({ value, label, definition }: {
 );
 
 const formatDateLabel = (label: string) => new Date(label).toLocaleDateString('de-DE');
+const formatCompactDateLabel = (label: string) => {
+    const date = new Date(label);
+    if (!Number.isNaN(date.getTime())) {
+        return date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+    }
+
+    const match = label.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+    if (match) {
+        return `${match[1].padStart(2, '0')}.${match[2].padStart(2, '0')}.`;
+    }
+
+    return label;
+};
 
 export const AnalyticsPage = () => {
     const [credentials, setCredentials] = useState('');
@@ -153,17 +263,17 @@ export const AnalyticsPage = () => {
                         </section>
                         <section className="analytics-wide">
                             <h2>Besucher pro Tag</h2>
-                            <MetricBars items={summary.dailyVisitors.map((item) => ({
+                            <MetricLineChart items={summary.dailyVisitors.map((item) => ({
                                 label: formatDateLabel(item.label),
                                 value: item.visitors,
                             }))} />
                         </section>
                         <section>
                             <h2>Grabstellendetails pro Tag</h2>
-                            <MetricBars items={summary.graveDetails.daily.map((item) => ({
+                            <MetricLineChart items={summary.graveDetails.daily.map((item) => ({
                                 label: formatDateLabel(item.label),
                                 value: item.views,
-                            }))} />
+                            }))} scrollable={false} />
                         </section>
                         <section>
                             <h2>Häufig geöffnete Grabstellendetails</h2>
